@@ -42,10 +42,13 @@ PhantomEditor is a lightweight, terminal-based text editor written in Rust. It c
 
 To start PhantomEditor:
 ```
-./PhantomEditor [filename]
+./PhantomEditor
+./PhantomEditor file.txt
+./PhantomEditor ~/Project
 ```
 
 If a filename is provided, PhantomEditor will attempt to open that file. Otherwise, it will start with a blank document.
+If a directory is provided, PhantomEditor will enter directory navigation mode
 
 ## Keybinds and Commands
 
