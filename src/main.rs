@@ -658,7 +658,7 @@ impl Editor {
                         if !before.is_empty() {
                             line_spans.push(Span::styled(before.to_string(), span.style));
                         }
-                        line_spans.push(Span::styled("|".to_string(), self.cursor_style));
+                        line_spans.push(Span::styled("".to_string(), self.cursor_style));
                         if !after.is_empty() {
                             line_spans.push(Span::styled(after.to_string(), span.style));
                         }
