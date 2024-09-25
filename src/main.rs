@@ -88,7 +88,7 @@ impl FileSelector {
             .margin(1)
             .constraints([Constraint::Percentage(100)].as_ref())
             .split(f.size());
-    
+
         let items: Vec<ListItem> = self.entries
             .iter()
             .map(|path| {
@@ -100,7 +100,7 @@ impl FileSelector {
                 }
             })
             .collect();
-    
+
         let list = List::new(items)
             .block(Block::default().title("File Selector").borders(Borders::ALL))
             .highlight_style(
@@ -109,7 +109,7 @@ impl FileSelector {
                     .fg(Color::Black)
                     .add_modifier(Modifier::BOLD),
             );
-    
+
         let mut state = ListState::default();
         state.select(Some(self.selected_index));
         f.render_stateful_widget(list, chunks[0], &mut state);
@@ -130,6 +130,7 @@ struct Editor {
     clipboard_context: ClipboardContext,
     visual_start: (usize, usize),
     file_selector: Option<FileSelector>,
+    show_debug: bool,
 }
 
 impl Editor {
@@ -148,6 +149,7 @@ impl Editor {
             clipboard_context: ClipboardProvider::new().expect("Failed to initialize clipboard"),
             visual_start: (0, 0),
             file_selector: None,
+            show_debug: false,
         }
     }
 
@@ -280,6 +282,9 @@ impl Editor {
                 self.mode = Mode::Command;
                 self.command_buffer.clear();
             }
+            KeyCode::Char('b') if key.modifiers == KeyModifiers::CONTROL => {
+                self.toggle_debug_menu();
+            }
             _ => {}
         }
         Ok(false)
@@ -352,7 +357,7 @@ impl Editor {
         match command {
             "w" => {
                 match self.save_file(None) {
-                    Ok(_) => self.debug_messages.push("File saved successfully".to_string()),
+                    Ok(_) => self.debug_messages.push("File saved".to_string()),
                     Err(e) => self.debug_messages.push(format!("Error saving file: {}", e)),
                 }
             },
@@ -575,6 +580,15 @@ impl Editor {
         Ok(())
     }
 
+    fn toggle_debug_menu(&mut self) {
+        self.show_debug = !self.show_debug;
+        self.debug_messages.push(if self.show_debug {
+            "Debug menu shown".to_string()
+        } else {
+            "Debug menu hidden".to_string()
+        });
+    }
+
     fn ui<B: tui::backend::Backend>(&self, f: &mut Frame<B>) {
         if self.mode == Mode::FileSelect {
             if let Some(file_selector) = &self.file_selector {
@@ -582,22 +596,26 @@ impl Editor {
             }
             return;
         }
-
+    
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .margin(1)
-            .constraints([
-                Constraint::Length(6),
-                Constraint::Min(1),
-                Constraint::Length(1)
-            ].as_ref())
+            .constraints(
+                if self.show_debug {
+                    vec![
+                        Constraint::Length(6),
+                        Constraint::Min(1),
+                        Constraint::Length(1)
+                    ]
+                } else {
+                    vec![
+                        Constraint::Min(1),
+                        Constraint::Length(1)
+                    ]
+                }
+            )
             .split(f.size());
-
-        let debug_messages: Vec<Spans> = self.debug_messages.iter().map(|m| Spans::from(m.clone())).collect();
-        let debug_paragraph = Paragraph::new(debug_messages)
-            .block(Block::default().borders(Borders::ALL).title("Debug Output"));
-        f.render_widget(debug_paragraph, chunks[0]);
-
+    
         let mode_indicator = match self.mode {
             Mode::Normal => "NORMAL",
             Mode::Insert => "INSERT",
@@ -605,19 +623,19 @@ impl Editor {
             Mode::Visual => "VISUAL",
             Mode::FileSelect => "FILE SELECT",
         };
-
+    
         let block = Block::default()
             .borders(Borders::ALL)
             .title(Span::styled(
                 format!("Editor - {}", mode_indicator),
                 Style::default().add_modifier(Modifier::BOLD),
             ));
-
+    
         let syntax = self.ps.find_syntax_by_extension("rs")
             .or_else(|| self.ps.find_syntax_by_name(&self.syntax))
             .unwrap_or_else(|| self.ps.find_syntax_plain_text());
         let mut h = HighlightLines::new(syntax, &self.ts.themes["base16-ocean.dark"]);
-
+    
         let mut text = Vec::new();
         for (index, line) in self.content.iter().enumerate() {
             let ranges: Vec<(SyntectStyle, &str)> = h.highlight_line(line, &self.ps).unwrap();
@@ -657,21 +675,29 @@ impl Editor {
                 text.push(Spans::from(styled_spans));
             }
         }
-
+    
+        let editor_chunk_index = if self.show_debug { 1 } else { 0 };
         let paragraph = Paragraph::new(text).block(block);
-        f.render_widget(paragraph, chunks[1]);
-
+        f.render_widget(paragraph, chunks[editor_chunk_index]);
+    
+        if self.show_debug {
+            let debug_messages: Vec<Spans> = self.debug_messages.iter().map(|m| Spans::from(m.clone())).collect();
+            let debug_paragraph = Paragraph::new(debug_messages)
+                .block(Block::default().borders(Borders::ALL).title("Debug Output"));
+            f.render_widget(debug_paragraph, chunks[0]);
+        }
+    
         if self.mode == Mode::Command {
             let command_text = Spans::from(format!(":{}", self.command_buffer));
             let command_paragraph = Paragraph::new(vec![command_text]);
-            f.render_widget(command_paragraph, chunks[2]);
+            f.render_widget(command_paragraph, chunks[chunks.len() - 1]);
         }
-
+    
         let cursor_x = self.cursor_position.0 as u16 + 2;
-        let cursor_y = self.cursor_position.1 as u16 + 8;
+        let cursor_y = self.cursor_position.1 as u16 + if self.show_debug { 8 } else { 2 };
         f.set_cursor(
-            cursor_x.min(chunks[1].width - 1),
-            cursor_y.min(chunks[1].height - 1),
+            cursor_x.min(chunks[editor_chunk_index].width - 1),
+            cursor_y.min(chunks[editor_chunk_index].height - 1),
         )
     }
 }

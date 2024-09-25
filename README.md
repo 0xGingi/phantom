@@ -65,6 +65,7 @@ If a filename is provided, PhantomEditor will attempt to open that file. Otherwi
 - `End`: Move to the end of the line
 - `Delete`: Delete the character under the cursor
 - `:`: Enter Command mode
+- `Ctrl+B`: Toggle debug menu visibility
 
 ### Insert Mode
 
