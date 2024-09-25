@@ -74,6 +74,7 @@ If a directory is provided, PhantomEditor will enter directory navigation mode
 - `Delete`: Delete the character under the cursor
 - `:`: Enter Command mode
 - `Ctrl+B`: Toggle debug menu visibility
+- `Ctrl+E`: Enter directory navigation mode
 
 ### Insert Mode
 

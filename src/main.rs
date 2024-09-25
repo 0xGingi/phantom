@@ -28,26 +28,29 @@ enum Mode {
     Command,
     Visual,
     FileSelect,
+    DirectoryNav,
 }
 
 struct FileSelector {
     current_dir: PathBuf,
     entries: Vec<PathBuf>,
     selected_index: usize,
+    parent_dir_index: Option<usize>,
 }
 
 impl FileSelector {
     fn new(path: &Path) -> io::Result<Self> {
         let current_dir = path.to_path_buf();
-        let entries = fs::read_dir(&current_dir)?
+        let mut entries = vec![current_dir.join("..")];
+        entries.extend(fs::read_dir(&current_dir)?
             .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path())
-            .collect::<Vec<_>>();
+            .map(|entry| entry.path()));
         
         Ok(FileSelector {
             current_dir,
             entries,
             selected_index: 0,
+            parent_dir_index: Some(0),
         })
     }
 
@@ -68,11 +71,12 @@ impl FileSelector {
             let selected = &self.entries[self.selected_index];
             if selected.is_dir() {
                 self.current_dir = selected.clone();
-                self.entries = fs::read_dir(&self.current_dir)?
+                self.entries = vec![self.current_dir.join("..")];
+                self.entries.extend(fs::read_dir(&self.current_dir)?
                     .filter_map(|entry| entry.ok())
-                    .map(|entry| entry.path())
-                    .collect::<Vec<_>>();
+                    .map(|entry| entry.path()));
                 self.selected_index = 0;
+                self.parent_dir_index = Some(0);
                 Ok(None)
             } else {
                 Ok(Some(selected.clone()))
@@ -82,38 +86,44 @@ impl FileSelector {
         }
     }
 
-    fn render<B: tui::backend::Backend>(&self, f: &mut Frame<B>) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .margin(1)
-            .constraints([Constraint::Percentage(100)].as_ref())
-            .split(f.size());
+fn render<B: tui::backend::Backend>(&self, f: &mut Frame<B>) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([Constraint::Percentage(100)].as_ref())
+        .split(f.size());
 
-        let items: Vec<ListItem> = self.entries
-            .iter()
-            .map(|path| {
-                let name = path.file_name().unwrap_or_default().to_string_lossy();
-                if path.is_dir() {
-                    ListItem::new(format!("📁 {}", name))
-                } else {
-                    ListItem::new(format!("📄 {}", name))
-                }
-            })
-            .collect();
+    let items: Vec<ListItem> = self.entries
+        .iter()
+        .enumerate()
+        .map(|(index, path)| {
+            let name = if Some(index) == self.parent_dir_index {
+                ".. (Parent Directory)".to_string()
+            } else {
+                path.file_name().unwrap_or_default().to_string_lossy().into_owned()
+            };
+            
+            if path.is_dir() {
+                ListItem::new(format!("📁 {}", name))
+            } else {
+                ListItem::new(format!("📄 {}", name))
+            }
+        })
+        .collect();
 
-        let list = List::new(items)
-            .block(Block::default().title("File Selector").borders(Borders::ALL))
-            .highlight_style(
-                Style::default()
-                    .bg(Color::Yellow)
-                    .fg(Color::Black)
-                    .add_modifier(Modifier::BOLD),
-            );
+    let list = List::new(items)
+        .block(Block::default().title("File Selector").borders(Borders::ALL))
+        .highlight_style(
+            Style::default()
+                .bg(Color::Yellow)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+        );
 
-        let mut state = ListState::default();
-        state.select(Some(self.selected_index));
-        f.render_stateful_widget(list, chunks[0], &mut state);
-    }
+    let mut state = ListState::default();
+    state.select(Some(self.selected_index));
+    f.render_stateful_widget(list, chunks[0], &mut state);
+}
 }
 
 struct Editor {
@@ -158,7 +168,7 @@ impl Editor {
         editor.open_file(path)?;
         Ok(editor)
     }
-
+    
     fn run(&mut self) -> Result<(), Box<dyn Error>> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
@@ -221,7 +231,7 @@ impl Editor {
                 Ok(false)
             },
             Mode::Visual => self.handle_visual_mode(key),
-            Mode::FileSelect => self.handle_file_select_mode(key),
+            Mode::FileSelect | Mode::DirectoryNav => self.handle_file_select_mode(key),
         }
     }
 
@@ -285,6 +295,9 @@ impl Editor {
             KeyCode::Char('b') if key.modifiers == KeyModifiers::CONTROL => {
                 self.toggle_debug_menu();
             }
+            KeyCode::Char('e') if key.modifiers == KeyModifiers::CONTROL => {
+                self.enter_directory_nav_mode()?;
+            }
             _ => {}
         }
         Ok(false)
@@ -306,7 +319,10 @@ impl Editor {
             KeyCode::Enter => return Ok(true),
             KeyCode::Char(c) => self.command_buffer.push(c),
             KeyCode::Backspace => { self.command_buffer.pop(); }
-            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.command_buffer.clear();
+            }
             _ => {}
         }
         Ok(false)
@@ -315,14 +331,14 @@ impl Editor {
     fn handle_visual_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
         match key.code {
             KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Left => self.move_cursor_left(),
+            KeyCode::Down => self.move_cursor_down(),
+            KeyCode::Up => self.move_cursor_up(),
+            KeyCode::Right => self.move_cursor_right(),
             KeyCode::Char('y') => {
                 self.copy_selection();
                 self.mode = Mode::Normal;
             }
-            KeyCode::Up => self.move_cursor_up(),
-            KeyCode::Down => self.move_cursor_down(),
-            KeyCode::Left => self.move_cursor_left(),
-            KeyCode::Right => self.move_cursor_right(),
             _ => {}
         }
         Ok(false)
@@ -352,43 +368,26 @@ impl Editor {
 
     fn execute_command(&mut self) -> io::Result<bool> {
         let command = self.command_buffer.clone();
-        let command = command.trim();
-        
-        match command {
-            "w" => {
-                match self.save_file(None) {
-                    Ok(_) => self.debug_messages.push("File saved".to_string()),
-                    Err(e) => self.debug_messages.push(format!("Error saving file: {}", e)),
-                }
-            },
-            "q" => return Ok(true),
-            "wq" => {
-                match self.save_file(None) {
-                    Ok(_) => return Ok(true),
-                    Err(e) => self.debug_messages.push(format!("Error saving file: {}", e)),
-                }
-            },
-            _ if command.starts_with("w ") => {
-                let filename = command.get(2..).map(|s| s.trim());
-                match self.save_file(filename) {
-                    Ok(_) => self.debug_messages.push(format!("File saved as: {}", filename.unwrap_or("Unknown"))),
-                    Err(e) => self.debug_messages.push(format!("Error saving file: {}", e)),
-                }
-            },
-            _ if command.starts_with("e ") => {
-                let filename = &command[2..];
-                match self.open_file(Path::new(filename)) {
-                    Ok(_) => {
-                        self.debug_messages.push(format!("File opened: {}", filename));
-                    },
-                    Err(e) => self.debug_messages.push(format!("Error opening file: {}", e)),
-                }
-            },
-            _ => {
-                self.debug_messages.push(format!("Unknown command: {}", command));
-            }
-        }
         self.mode = Mode::Normal;
+        self.command_buffer.clear();
+
+        match command.as_str() {
+            "q" => return Ok(true),
+            "w" => self.save_file(None)?,
+            cmd if cmd.starts_with("w ") => {
+                let filename = cmd.split_whitespace().nth(1).unwrap();
+                self.save_file(Some(Path::new(filename)))?;
+            }
+            "wq" => {
+                self.save_file(None)?;
+                return Ok(true);
+            }
+            cmd if cmd.starts_with("e ") => {
+                let filename = cmd.split_whitespace().nth(1).unwrap();
+                self.open_file(Path::new(filename))?;
+            }
+            _ => self.debug_messages.push(format!("Unknown command: {}", command)),
+        }
         Ok(false)
     }
 
@@ -401,7 +400,7 @@ impl Editor {
 
     fn move_cursor_right(&mut self) {
         let (x, y) = self.cursor_position;
-        if y < self.content.len() && x < self.content[y].len() {
+        if x < self.content[y].len() {
             self.cursor_position = (x + 1, y);
         }
     }
@@ -429,15 +428,6 @@ impl Editor {
         self.cursor_position.0 = self.content[y].len();
     }
 
-    fn insert_char(&mut self, c: char) {
-        let (x, y) = self.cursor_position;
-        if y >= self.content.len() {
-            self.content.push(String::new());
-        }
-        self.content[y].insert(x, c);
-        self.cursor_position = (x + 1, y);
-    }
-
     fn insert_newline(&mut self) {
         let (x, y) = self.cursor_position;
         let current_line = self.content[y].clone();
@@ -447,11 +437,17 @@ impl Editor {
         self.cursor_position = (0, y + 1);
     }
 
+    fn insert_char(&mut self, c: char) {
+        let (x, y) = self.cursor_position;
+        self.content[y].insert(x, c);
+        self.cursor_position.0 += 1;
+    }
+
     fn backspace(&mut self) {
         let (x, y) = self.cursor_position;
         if x > 0 {
             self.content[y].remove(x - 1);
-            self.cursor_position = (x - 1, y);
+            self.cursor_position.0 -= 1;
         } else if y > 0 {
             let current_line = self.content.remove(y);
             let previous_line_len = self.content[y - 1].len();
@@ -470,36 +466,26 @@ impl Editor {
         }
     }
 
-    fn insert_line_below(&mut self) {
-        let y = self.cursor_position.1;
-        self.content.insert(y + 1, String::new());
-        self.cursor_position = (0, y + 1);
-    }
-
-    fn insert_line_above(&mut self) {
-        let y = self.cursor_position.1;
-        self.content.insert(y, String::new());
-        self.cursor_position = (0, y);
-    }
-
     fn delete_line(&mut self) {
         let y = self.cursor_position.1;
         if self.content.len() > 1 {
             self.content.remove(y);
-            if y == self.content.len() {
-                self.cursor_position = (0, y - 1);
-            }
         } else {
             self.content[0].clear();
         }
+        if y >= self.content.len() {
+            self.cursor_position.1 = self.content.len() - 1;
+        }
+        self.cursor_position.0 = 0;
     }
 
     fn yank_line(&mut self) {
-        let (_, y) = self.cursor_position;
-        if let Err(e) = self.clipboard_context.set_contents(self.content[y].clone()) {
-            self.debug_messages.push(format!("Failed to yank line to clipboard: {}", e));
+        let y = self.cursor_position.1;
+        let line = self.content[y].clone();
+        if let Err(e) = self.clipboard_context.set_contents(line) {
+            self.debug_messages.push(format!("Failed to copy to clipboard: {}", e));
         } else {
-            self.debug_messages.push("Line yanked to clipboard".to_string());
+            self.debug_messages.push("Line copied to clipboard".to_string());
         }
     }
 
@@ -512,6 +498,18 @@ impl Editor {
         } else {
             self.debug_messages.push("Failed to paste from clipboard".to_string());
         }
+    }
+
+    fn insert_line_below(&mut self) {
+        let y = self.cursor_position.1;
+        self.content.insert(y + 1, String::new());
+        self.cursor_position = (0, y + 1);
+    }
+
+    fn insert_line_above(&mut self) {
+        let y = self.cursor_position.1;
+        self.content.insert(y, String::new());
+        self.cursor_position = (0, y);
     }
 
     fn copy_selection(&mut self) {
@@ -541,21 +539,21 @@ impl Editor {
         }
     }
 
-    fn save_file(&mut self, filename: Option<&str>) -> io::Result<()> {
+    fn save_file(&mut self, filename: Option<&Path>) -> io::Result<()> {
         let filename = if let Some(name) = filename {
-            name.to_string()
+            name.to_path_buf()
         } else if let Some(ref name) = self.current_file {
-            name.clone()
+            PathBuf::from(name)
         } else {
             return Err(io::Error::new(io::ErrorKind::Other, "No filename specified. Use :w <filename> to save."));
         };
-
+    
         let mut file = fs::File::create(&filename)?;
         for line in &self.content {
             writeln!(file, "{}", line)?;
         }
-        self.current_file = Some(filename.clone());
-        self.debug_messages.push(format!("File saved: {}", filename));
+        self.current_file = Some(filename.to_string_lossy().into_owned());
+        self.debug_messages.push(format!("File saved: {}", filename.display()));
         Ok(())
     }
 
@@ -589,14 +587,25 @@ impl Editor {
         });
     }
 
+    fn enter_directory_nav_mode(&mut self) -> io::Result<()> {
+        let current_dir = if let Some(ref file) = self.current_file {
+            Path::new(file).parent().unwrap_or(Path::new(".")).to_path_buf()
+        } else {
+            env::current_dir()?
+        };
+        self.file_selector = Some(FileSelector::new(&current_dir)?);
+        self.mode = Mode::DirectoryNav;
+        Ok(())
+    }
+
     fn ui<B: tui::backend::Backend>(&self, f: &mut Frame<B>) {
-        if self.mode == Mode::FileSelect {
+        if self.mode == Mode::FileSelect || self.mode == Mode::DirectoryNav {
             if let Some(file_selector) = &self.file_selector {
                 file_selector.render(f);
             }
             return;
         }
-    
+
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .margin(1)
@@ -615,27 +624,28 @@ impl Editor {
                 }
             )
             .split(f.size());
-    
+
         let mode_indicator = match self.mode {
             Mode::Normal => "NORMAL",
             Mode::Insert => "INSERT",
             Mode::Command => "COMMAND",
             Mode::Visual => "VISUAL",
             Mode::FileSelect => "FILE SELECT",
+            Mode::DirectoryNav => "DIRECTORY NAV",
         };
-    
+
         let block = Block::default()
             .borders(Borders::ALL)
             .title(Span::styled(
                 format!("Editor - {}", mode_indicator),
                 Style::default().add_modifier(Modifier::BOLD),
             ));
-    
+
         let syntax = self.ps.find_syntax_by_extension("rs")
             .or_else(|| self.ps.find_syntax_by_name(&self.syntax))
             .unwrap_or_else(|| self.ps.find_syntax_plain_text());
         let mut h = HighlightLines::new(syntax, &self.ts.themes["base16-ocean.dark"]);
-    
+
         let mut text = Vec::new();
         for (index, line) in self.content.iter().enumerate() {
             let ranges: Vec<(SyntectStyle, &str)> = h.highlight_line(line, &self.ps).unwrap();
@@ -668,31 +678,31 @@ impl Editor {
                     current_len += span_len;
                 }
                 if self.cursor_position.0 >= current_len {
-                    line_spans.push(Span::styled("|".to_string(), self.cursor_style));
+                    line_spans.push(Span::styled("".to_string(), self.cursor_style));
                 }
                 text.push(Spans::from(line_spans));
             } else {
                 text.push(Spans::from(styled_spans));
             }
         }
-    
+
         let editor_chunk_index = if self.show_debug { 1 } else { 0 };
         let paragraph = Paragraph::new(text).block(block);
         f.render_widget(paragraph, chunks[editor_chunk_index]);
-    
+
         if self.show_debug {
             let debug_messages: Vec<Spans> = self.debug_messages.iter().map(|m| Spans::from(m.clone())).collect();
             let debug_paragraph = Paragraph::new(debug_messages)
                 .block(Block::default().borders(Borders::ALL).title("Debug Output"));
             f.render_widget(debug_paragraph, chunks[0]);
         }
-    
+
         if self.mode == Mode::Command {
             let command_text = Spans::from(format!(":{}", self.command_buffer));
             let command_paragraph = Paragraph::new(vec![command_text]);
             f.render_widget(command_paragraph, chunks[chunks.len() - 1]);
         }
-    
+
         let cursor_x = self.cursor_position.0 as u16 + 2;
         let cursor_y = self.cursor_position.1 as u16 + if self.show_debug { 8 } else { 2 };
         f.set_cursor(
