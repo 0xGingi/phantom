@@ -29,6 +29,7 @@ enum Mode {
     Visual,
     FileSelect,
     DirectoryNav,
+    Search,
 }
 
 struct FileSelector {
@@ -86,44 +87,44 @@ impl FileSelector {
         }
     }
 
-fn render<B: tui::backend::Backend>(&self, f: &mut Frame<B>) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(1)
-        .constraints([Constraint::Percentage(100)].as_ref())
-        .split(f.size());
+    fn render<B: tui::backend::Backend>(&self, f: &mut Frame<B>) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(1)
+            .constraints([Constraint::Percentage(100)].as_ref())
+            .split(f.size());
 
-    let items: Vec<ListItem> = self.entries
-        .iter()
-        .enumerate()
-        .map(|(index, path)| {
-            let name = if Some(index) == self.parent_dir_index {
-                ".. (Parent Directory)".to_string()
-            } else {
-                path.file_name().unwrap_or_default().to_string_lossy().into_owned()
-            };
-            
-            if path.is_dir() {
-                ListItem::new(format!("📁 {}", name))
-            } else {
-                ListItem::new(format!("📄 {}", name))
-            }
-        })
-        .collect();
+        let items: Vec<ListItem> = self.entries
+            .iter()
+            .enumerate()
+            .map(|(index, path)| {
+                let name = if Some(index) == self.parent_dir_index {
+                    ".. (Parent Directory)".to_string()
+                } else {
+                    path.file_name().unwrap_or_default().to_string_lossy().into_owned()
+                };
+                
+                if path.is_dir() {
+                    ListItem::new(format!("📁 {}", name))
+                } else {
+                    ListItem::new(format!("📄 {}", name))
+                }
+            })
+            .collect();
 
-    let list = List::new(items)
-        .block(Block::default().title("File Selector").borders(Borders::ALL))
-        .highlight_style(
-            Style::default()
-                .bg(Color::Yellow)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD),
-        );
+        let list = List::new(items)
+            .block(Block::default().title("File Selector").borders(Borders::ALL))
+            .highlight_style(
+                Style::default()
+                    .bg(Color::Yellow)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD),
+            );
 
-    let mut state = ListState::default();
-    state.select(Some(self.selected_index));
-    f.render_stateful_widget(list, chunks[0], &mut state);
-}
+        let mut state = ListState::default();
+        state.select(Some(self.selected_index));
+        f.render_stateful_widget(list, chunks[0], &mut state);
+    }
 }
 
 struct Editor {
@@ -141,6 +142,10 @@ struct Editor {
     visual_start: (usize, usize),
     file_selector: Option<FileSelector>,
     show_debug: bool,
+    search_query: String,
+    search_results: Vec<(usize, usize)>,
+    current_search_index: usize,
+    scroll_offset: usize,
 }
 
 impl Editor {
@@ -160,6 +165,10 @@ impl Editor {
             visual_start: (0, 0),
             file_selector: None,
             show_debug: false,
+            search_query: String::new(),
+            search_results: Vec::new(),
+            current_search_index: 0,
+            scroll_offset: 0,
         }
     }
 
@@ -232,14 +241,13 @@ impl Editor {
             },
             Mode::Visual => self.handle_visual_mode(key),
             Mode::FileSelect | Mode::DirectoryNav => self.handle_file_select_mode(key),
+            Mode::Search => self.handle_search_mode(key),
         }
     }
 
     fn handle_normal_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
         match key.code {
-            KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => return Ok(true),
             KeyCode::Char('i') => self.mode = Mode::Insert,
-            KeyCode::Insert => self.mode = Mode::Insert,
             KeyCode::Char('a') => {
                 self.mode = Mode::Insert;
                 self.move_cursor_right();
@@ -298,6 +306,17 @@ impl Editor {
             KeyCode::Char('e') if key.modifiers == KeyModifiers::CONTROL => {
                 self.enter_directory_nav_mode()?;
             }
+            KeyCode::Char('/') => {
+                self.enter_search_mode();
+            }
+            KeyCode::Char('n') => {
+                self.next_search_result();
+            }
+            KeyCode::Char('N') => {
+                self.previous_search_result();
+            }
+            KeyCode::PageUp => self.page_up(),
+            KeyCode::PageDown => self.page_down(),
             _ => {}
         }
         Ok(false)
@@ -308,6 +327,10 @@ impl Editor {
             KeyCode::Esc => self.mode = Mode::Normal,
             KeyCode::Enter => self.insert_newline(),
             KeyCode::Backspace => self.backspace(),
+            KeyCode::Left => self.move_cursor_left(),
+            KeyCode::Down => self.move_cursor_down(),
+            KeyCode::Up => self.move_cursor_up(),
+            KeyCode::Right => self.move_cursor_right(),
             KeyCode::Char(c) => self.insert_char(c),
             _ => {}
         }
@@ -319,10 +342,7 @@ impl Editor {
             KeyCode::Enter => return Ok(true),
             KeyCode::Char(c) => self.command_buffer.push(c),
             KeyCode::Backspace => { self.command_buffer.pop(); }
-            KeyCode::Esc => {
-                self.mode = Mode::Normal;
-                self.command_buffer.clear();
-            }
+            KeyCode::Esc => self.mode = Mode::Normal,
             _ => {}
         }
         Ok(false)
@@ -337,6 +357,10 @@ impl Editor {
             KeyCode::Right => self.move_cursor_right(),
             KeyCode::Char('y') => {
                 self.copy_selection();
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Char('d') => {
+                self.delete_selection();
                 self.mode = Mode::Normal;
             }
             _ => {}
@@ -392,150 +416,225 @@ impl Editor {
     }
 
     fn move_cursor_left(&mut self) {
-        let (x, y) = self.cursor_position;
-        if x > 0 {
-            self.cursor_position = (x - 1, y);
+        if self.cursor_position.0 > 0 {
+            self.cursor_position.0 -= 1;
+        } else if self.cursor_position.1 > 0 {
+            self.cursor_position.1 -= 1;
+            self.cursor_position.0 = self.content[self.cursor_position.1].len();
         }
     }
 
     fn move_cursor_right(&mut self) {
-        let (x, y) = self.cursor_position;
-        if x < self.content[y].len() {
-            self.cursor_position = (x + 1, y);
+        if self.cursor_position.0 < self.content[self.cursor_position.1].len() {
+            self.cursor_position.0 += 1;
+        } else if self.cursor_position.1 < self.content.len() - 1 {
+            self.cursor_position.1 += 1;
+            self.cursor_position.0 = 0;
         }
     }
 
     fn move_cursor_up(&mut self) {
-        let (x, y) = self.cursor_position;
-        if y > 0 {
-            self.cursor_position = (x.min(self.content[y - 1].len()), y - 1);
+        if self.cursor_position.1 > 0 {
+            self.cursor_position.1 -= 1;
+            if self.cursor_position.1 < self.scroll_offset {
+                self.scroll_offset = self.cursor_position.1;
+            }
         }
     }
-
+    
     fn move_cursor_down(&mut self) {
-        let (x, y) = self.cursor_position;
-        if y < self.content.len() - 1 {
-            self.cursor_position = (x.min(self.content[y + 1].len()), y + 1);
+        if self.cursor_position.1 < self.content.len() - 1 {
+            self.cursor_position.1 += 1;
+            let editor_height = self.get_editor_height();
+            if self.cursor_position.1 >= self.scroll_offset + editor_height {
+                self.scroll_offset = self.cursor_position.1 - editor_height + 1;
+            }
         }
     }
-
+    
+    fn get_editor_height(&self) -> usize {
+        // This is an approximation. In a real implementation, you'd get the actual terminal size.
+        24
+    }
     fn move_cursor_start_of_line(&mut self) {
         self.cursor_position.0 = 0;
     }
 
     fn move_cursor_end_of_line(&mut self) {
-        let y = self.cursor_position.1;
-        self.cursor_position.0 = self.content[y].len();
-    }
-
-    fn insert_newline(&mut self) {
-        let (x, y) = self.cursor_position;
-        let current_line = self.content[y].clone();
-        let (left, right) = current_line.split_at(x);
-        self.content[y] = left.to_string();
-        self.content.insert(y + 1, right.to_string());
-        self.cursor_position = (0, y + 1);
+        self.cursor_position.0 = self.content[self.cursor_position.1].len();
     }
 
     fn insert_char(&mut self, c: char) {
-        let (x, y) = self.cursor_position;
-        self.content[y].insert(x, c);
+        let line = &mut self.content[self.cursor_position.1];
+        line.insert(self.cursor_position.0, c);
         self.cursor_position.0 += 1;
     }
 
+    fn insert_newline(&mut self) {
+        let current_line = &mut self.content[self.cursor_position.1];
+        let rest_of_line = current_line.split_off(self.cursor_position.0);
+        self.content.insert(self.cursor_position.1 + 1, rest_of_line);
+        self.cursor_position = (0, self.cursor_position.1 + 1);
+    }
+
+    fn page_up(&mut self) {
+        let editor_height = self.get_editor_height();
+        if self.scroll_offset > editor_height {
+            self.scroll_offset -= editor_height;
+        } else {
+            self.scroll_offset = 0;
+        }
+        self.cursor_position.1 = self.scroll_offset;
+    }
+    
+    fn page_down(&mut self) {
+        let editor_height = self.get_editor_height();
+        let max_scroll = self.content.len().saturating_sub(editor_height);
+        if self.scroll_offset + editor_height < max_scroll {
+            self.scroll_offset += editor_height;
+        } else {
+            self.scroll_offset = max_scroll;
+        }
+        self.cursor_position.1 = self.scroll_offset + editor_height - 1;
+        if self.cursor_position.1 >= self.content.len() {
+            self.cursor_position.1 = self.content.len() - 1;
+        }
+    }
+
     fn backspace(&mut self) {
-        let (x, y) = self.cursor_position;
-        if x > 0 {
-            self.content[y].remove(x - 1);
+        if self.cursor_position.0 > 0 {
+            let line = &mut self.content[self.cursor_position.1];
+            line.remove(self.cursor_position.0 - 1);
             self.cursor_position.0 -= 1;
-        } else if y > 0 {
-            let current_line = self.content.remove(y);
-            let previous_line_len = self.content[y - 1].len();
-            self.content[y - 1].push_str(&current_line);
-            self.cursor_position = (previous_line_len, y - 1);
+        } else if self.cursor_position.1 > 0 {
+            let current_line = self.content.remove(self.cursor_position.1);
+            self.cursor_position.1 -= 1;
+            self.cursor_position.0 = self.content[self.cursor_position.1].len();
+            self.content[self.cursor_position.1].push_str(&current_line);
         }
     }
 
     fn delete_char(&mut self) {
-        let (x, y) = self.cursor_position;
-        if x < self.content[y].len() {
-            self.content[y].remove(x);
-        } else if y < self.content.len() - 1 {
-            let next_line = self.content.remove(y + 1);
-            self.content[y].push_str(&next_line);
+        let line = &mut self.content[self.cursor_position.1];
+        if self.cursor_position.0 < line.len() {
+            line.remove(self.cursor_position.0);
+        } else if self.cursor_position.1 < self.content.len() - 1 {
+            let next_line = self.content.remove(self.cursor_position.1 + 1);
+            self.content[self.cursor_position.1].push_str(&next_line);
         }
     }
 
     fn delete_line(&mut self) {
-        let y = self.cursor_position.1;
         if self.content.len() > 1 {
-            self.content.remove(y);
+            self.content.remove(self.cursor_position.1);
         } else {
             self.content[0].clear();
         }
-        if y >= self.content.len() {
+        if self.cursor_position.1 >= self.content.len() {
             self.cursor_position.1 = self.content.len() - 1;
         }
         self.cursor_position.0 = 0;
     }
 
-    fn yank_line(&mut self) {
-        let y = self.cursor_position.1;
-        let line = self.content[y].clone();
-        if let Err(e) = self.clipboard_context.set_contents(line) {
-            self.debug_messages.push(format!("Failed to copy to clipboard: {}", e));
-        } else {
-            self.debug_messages.push("Line copied to clipboard".to_string());
-        }
-    }
-
-    fn paste_after(&mut self) {
-        if let Ok(content) = self.clipboard_context.get_contents() {
-            let (_, y) = self.cursor_position;
-            self.content.insert(y + 1, content);
-            self.cursor_position = (0, y + 1);
-            self.debug_messages.push("Clipboard content pasted".to_string());
-        } else {
-            self.debug_messages.push("Failed to paste from clipboard".to_string());
-        }
-    }
-
     fn insert_line_below(&mut self) {
-        let y = self.cursor_position.1;
-        self.content.insert(y + 1, String::new());
-        self.cursor_position = (0, y + 1);
+        self.content.insert(self.cursor_position.1 + 1, String::new());
+        self.cursor_position = (0, self.cursor_position.1 + 1);
     }
 
     fn insert_line_above(&mut self) {
-        let y = self.cursor_position.1;
-        self.content.insert(y, String::new());
-        self.cursor_position = (0, y);
+        self.content.insert(self.cursor_position.1, String::new());
+        self.cursor_position.0 = 0;
+    }
+
+    fn yank_line(&mut self) {
+        let line = &self.content[self.cursor_position.1];
+        self.clipboard_context.set_contents(line.to_string()).unwrap();
+    }
+
+    fn paste_after(&mut self) {
+        if let Ok(contents) = self.clipboard_context.get_contents() {
+            let lines: Vec<&str> = contents.split('\n').collect();
+            if lines.len() == 1 {
+                let line = &mut self.content[self.cursor_position.1];
+                line.insert_str(self.cursor_position.0, &contents);
+                self.cursor_position.0 += contents.len();
+            } else {
+                for (i, &line) in lines.iter().enumerate() {
+                    if i == 0 {
+                        let current_line = &mut self.content[self.cursor_position.1];
+                        let rest_of_line = current_line.split_off(self.cursor_position.0);
+                        current_line.push_str(line);
+                        self.content.insert(self.cursor_position.1 + 1, rest_of_line);
+                    } else if i == lines.len() - 1 {
+                        self.content[self.cursor_position.1 + i].insert_str(0, line);
+                    } else {
+                        self.content.insert(self.cursor_position.1 + i, line.to_string());
+                    }
+                }
+                self.cursor_position = (lines.last().unwrap().len(), self.cursor_position.1 + lines.len() - 1);
+            }
+        }
     }
 
     fn copy_selection(&mut self) {
-        let (start, end) = if self.visual_start.1 <= self.cursor_position.1 {
+        let (start, end) = if self.visual_start <= self.cursor_position {
             (self.visual_start, self.cursor_position)
         } else {
             (self.cursor_position, self.visual_start)
         };
-        
-        let content = self.content[start.1..=end.1].join("\n");
-        if let Err(e) = self.clipboard_context.set_contents(content) {
-            self.debug_messages.push(format!("Failed to copy to clipboard: {}", e));
-        } else {
-            self.debug_messages.push(format!("{} lines copied to clipboard", end.1 - start.1 + 1));
+
+        let mut selected_text = String::new();
+        for (i, line) in self.content.iter().enumerate().skip(start.1).take(end.1 - start.1 + 1) {
+            if i == start.1 && i == end.1 {
+                selected_text.push_str(&line[start.0..=end.0]);
+            } else if i == start.1 {
+                selected_text.push_str(&line[start.0..]);
+                selected_text.push('\n');
+            } else if i == end.1 {
+                selected_text.push_str(&line[..=end.0]);
+            } else {
+                selected_text.push_str(line);
+                selected_text.push('\n');
+            }
         }
+
+        self.clipboard_context.set_contents(selected_text).unwrap();
+    }
+
+    fn delete_selection(&mut self) {
+        let (start, end) = if self.visual_start <= self.cursor_position {
+            (self.visual_start, self.cursor_position)
+        } else {
+            (self.cursor_position, self.visual_start)
+        };
+
+        if start.1 == end.1 {
+            let line = &mut self.content[start.1];
+            line.replace_range(start.0..=end.0, "");
+        } else {
+            let mut new_line = self.content[start.1][..start.0].to_string();
+            new_line.push_str(&self.content[end.1][end.0 + 1..]);
+            self.content.drain(start.1..=end.1);
+            self.content.insert(start.1, new_line);
+        }
+
+        self.cursor_position = start;
     }
 
     fn paste_clipboard(&mut self) {
-        if let Ok(content) = self.clipboard_context.get_contents() {
-            let (_, y) = self.cursor_position;
-            let new_lines: Vec<String> = content.lines().map(String::from).collect();
-            self.content.splice(y+1..y+1, new_lines);
-            self.cursor_position = (0, y + 1);
-            self.debug_messages.push("Clipboard content pasted".to_string());
-        } else {
-            self.debug_messages.push("Failed to paste from clipboard".to_string());
+        if let Ok(contents) = self.clipboard_context.get_contents() {
+            let lines: Vec<&str> = contents.split('\n').collect();
+            for (i, &line) in lines.iter().enumerate() {
+                if i == 0 {
+                    let current_line = &mut self.content[self.cursor_position.1];
+                    current_line.insert_str(self.cursor_position.0, line);
+                    self.cursor_position.0 += line.len();
+                } else {
+                    self.cursor_position.1 += 1;
+                    self.content.insert(self.cursor_position.1, line.to_string());
+                    self.cursor_position.0 = line.len();
+                }
+            }
         }
     }
 
@@ -547,7 +646,7 @@ impl Editor {
         } else {
             return Err(io::Error::new(io::ErrorKind::Other, "No filename specified. Use :w <filename> to save."));
         };
-    
+
         let mut file = fs::File::create(&filename)?;
         for line in &self.content {
             writeln!(file, "{}", line)?;
@@ -598,14 +697,14 @@ impl Editor {
         Ok(())
     }
 
-    fn ui<B: tui::backend::Backend>(&self, f: &mut Frame<B>) {
+    fn ui<B: tui::backend::Backend>(&mut self, f: &mut Frame<B>) {
         if self.mode == Mode::FileSelect || self.mode == Mode::DirectoryNav {
             if let Some(file_selector) = &self.file_selector {
                 file_selector.render(f);
             }
             return;
         }
-
+    
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .margin(1)
@@ -624,7 +723,7 @@ impl Editor {
                 }
             )
             .split(f.size());
-
+    
         let mode_indicator = match self.mode {
             Mode::Normal => "NORMAL",
             Mode::Insert => "INSERT",
@@ -632,22 +731,39 @@ impl Editor {
             Mode::Visual => "VISUAL",
             Mode::FileSelect => "FILE SELECT",
             Mode::DirectoryNav => "DIRECTORY NAV",
+            Mode::Search => "SEARCH",
         };
-
+    
         let block = Block::default()
             .borders(Borders::ALL)
             .title(Span::styled(
                 format!("Editor - {}", mode_indicator),
                 Style::default().add_modifier(Modifier::BOLD),
             ));
-
+    
         let syntax = self.ps.find_syntax_by_extension("rs")
             .or_else(|| self.ps.find_syntax_by_name(&self.syntax))
             .unwrap_or_else(|| self.ps.find_syntax_plain_text());
         let mut h = HighlightLines::new(syntax, &self.ts.themes["base16-ocean.dark"]);
-
+    
+        let editor_chunk_index = if self.show_debug { 1 } else { 0 };
+        let editor_height = chunks[editor_chunk_index].height as usize - 2; // Account for borders
+        let content_height = self.content.len();
+    
+        // Adjust scroll_offset if necessary
+        if self.cursor_position.1 < self.scroll_offset {
+            self.scroll_offset = self.cursor_position.1;
+        } else if self.cursor_position.1 >= self.scroll_offset + editor_height {
+            self.scroll_offset = self.cursor_position.1 - editor_height + 1;
+        }
+    
+        let visible_content = self.content.iter()
+            .skip(self.scroll_offset)
+            .take(editor_height)
+            .enumerate();
+    
         let mut text = Vec::new();
-        for (index, line) in self.content.iter().enumerate() {
+        for (index, line) in visible_content {
             let ranges: Vec<(SyntectStyle, &str)> = h.highlight_line(line, &self.ps).unwrap();
             let mut styled_spans = Vec::new();
             for (style, content) in ranges {
@@ -658,7 +774,7 @@ impl Editor {
                 ));
             }
             
-            if index == self.cursor_position.1 {
+            if index + self.scroll_offset == self.cursor_position.1 {
                 let mut line_spans = Vec::new();
                 let mut current_len = 0;
                 for span in styled_spans {
@@ -685,30 +801,90 @@ impl Editor {
                 text.push(Spans::from(styled_spans));
             }
         }
-
-        let editor_chunk_index = if self.show_debug { 1 } else { 0 };
+    
         let paragraph = Paragraph::new(text).block(block);
         f.render_widget(paragraph, chunks[editor_chunk_index]);
-
+    
         if self.show_debug {
             let debug_messages: Vec<Spans> = self.debug_messages.iter().map(|m| Spans::from(m.clone())).collect();
             let debug_paragraph = Paragraph::new(debug_messages)
                 .block(Block::default().borders(Borders::ALL).title("Debug Output"));
             f.render_widget(debug_paragraph, chunks[0]);
         }
-
+    
         if self.mode == Mode::Command {
             let command_text = Spans::from(format!(":{}", self.command_buffer));
             let command_paragraph = Paragraph::new(vec![command_text]);
             f.render_widget(command_paragraph, chunks[chunks.len() - 1]);
+        } else if self.mode == Mode::Search {
+            let search_text = Spans::from(format!("Search: {}", self.search_query));
+            let search_paragraph = Paragraph::new(vec![search_text]);
+            f.render_widget(search_paragraph, chunks[chunks.len() - 1]);
         }
-
+    
         let cursor_x = self.cursor_position.0 as u16 + 2;
-        let cursor_y = self.cursor_position.1 as u16 + if self.show_debug { 8 } else { 2 };
+        let cursor_y = (self.cursor_position.1 - self.scroll_offset) as u16 + if self.show_debug { 8 } else { 2 };
         f.set_cursor(
             cursor_x.min(chunks[editor_chunk_index].width - 1),
             cursor_y.min(chunks[editor_chunk_index].height - 1),
         )
+    }
+
+    fn enter_search_mode(&mut self) {
+        self.mode = Mode::Search;
+        self.search_query.clear();
+        self.search_results.clear();
+        self.current_search_index = 0;
+    }
+
+    fn perform_search(&mut self) {
+        self.search_results.clear();
+        for (line_num, line) in self.content.iter().enumerate() {
+            if let Some(col) = line.to_lowercase().find(&self.search_query.to_lowercase()) {
+                self.search_results.push((line_num, col));
+            }
+        }
+        self.current_search_index = 0;
+        if !self.search_results.is_empty() {
+            let (line, col) = self.search_results[0];
+            self.cursor_position = (col, line);
+        }
+    }
+
+    fn next_search_result(&mut self) {
+        if !self.search_results.is_empty() {
+            self.current_search_index = (self.current_search_index + 1) % self.search_results.len();
+            let (line, col) = self.search_results[self.current_search_index];
+            self.cursor_position = (col, line);
+        }
+    }
+
+    fn previous_search_result(&mut self) {
+        if !self.search_results.is_empty() {
+            self.current_search_index = (self.current_search_index + self.search_results.len() - 1) % self.search_results.len();
+            let (line, col) = self.search_results[self.current_search_index];
+            self.cursor_position = (col, line);
+        }
+    }
+
+    fn handle_search_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Enter => {
+                self.perform_search();
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Char(c) => {
+                self.search_query.push(c);
+            }
+            KeyCode::Backspace => {
+                self.search_query.pop();
+            }
+            _ => {}
+        }
+        Ok(false)
     }
 }
 
