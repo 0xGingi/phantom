@@ -14,6 +14,8 @@ PhantomEditor is a lightweight, terminal-based text editor written in Rust. It c
 - Syntax highlighting
 - System clipboard integration
 - Customizable (extendable through Rust)
+- Directory Navigation
+- Debug Output Menu
 
 ## Installation
 
