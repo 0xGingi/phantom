@@ -19,19 +19,20 @@ use tui::{
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{ThemeSet, Style as SyntectStyle};
 use syntect::parsing::SyntaxSet;
+use clipboard::{ClipboardContext, ClipboardProvider};
 
 #[derive(PartialEq)]
 enum Mode {
     Normal,
     Insert,
     Command,
+    Visual,
 }
 
 struct Editor {
     content: Vec<String>,
     cursor_position: (usize, usize),
     mode: Mode,
-    clipboard: String,
     debug_messages: Vec<String>,
     command_buffer: String,
     current_file: Option<String>,
@@ -39,6 +40,8 @@ struct Editor {
     ts: ThemeSet,
     syntax: String,
     cursor_style: Style,
+    clipboard_context: ClipboardContext,
+    visual_start: (usize, usize),
 }
 
 impl Editor {
@@ -47,7 +50,6 @@ impl Editor {
             content: vec![String::new()],
             cursor_position: (0, 0),
             mode: Mode::Normal,
-            clipboard: String::new(),
             debug_messages: Vec::new(),
             command_buffer: String::new(),
             current_file: None,
@@ -55,16 +57,14 @@ impl Editor {
             ts: ThemeSet::load_defaults(),
             syntax: "Plain Text".to_string(),
             cursor_style: Style::default().fg(Color::Yellow),
+            clipboard_context: ClipboardProvider::new().expect("Failed to initialize clipboard"),
+            visual_start: (0, 0),
         }
     }
 
     fn with_file(filename: &str) -> Result<Self, io::Error> {
         let mut editor = Self::new();
-        if Path::new(filename).exists() {
-            editor.open_file(filename)?;
-        } else {
-            editor.current_file = Some(filename.to_string());
-        }
+        editor.open_file(filename)?;
         Ok(editor)
     }
 
@@ -129,6 +129,7 @@ impl Editor {
                 }
                 Ok(false)
             },
+            Mode::Visual => self.handle_visual_mode(key),
         }
     }
 
@@ -157,16 +158,27 @@ impl Editor {
                 }
             }
             KeyCode::Char('y') => {
-                if let Event::Key(next_key) = event::read()? {
-                    if next_key.code == KeyCode::Char('y') {
-                        self.yank_line();
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    self.copy_selection();
+                } else {
+                    if let Event::Key(next_key) = event::read()? {
+                        if next_key.code == KeyCode::Char('y') {
+                            self.yank_line();
+                        }
                     }
                 }
             }
-            KeyCode::Char('p') => self.paste_after(),
-            KeyCode::Char('P') => self.paste_before(),
-            KeyCode::Char('u') => self.undo(),
-            KeyCode::Char('r') => self.redo(),
+            KeyCode::Char('p') => {
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    self.paste_clipboard();
+                } else {
+                    self.paste_after();
+                }
+            }
+            KeyCode::Char('v') => {
+                self.mode = Mode::Visual;
+                self.visual_start = self.cursor_position;
+            }
             KeyCode::Left => self.move_cursor_left(),
             KeyCode::Down => self.move_cursor_down(),
             KeyCode::Up => self.move_cursor_up(),
@@ -223,26 +235,49 @@ impl Editor {
         }
     }
 
+    fn handle_visual_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
+        match key.code {
+            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Char('y') => {
+                self.copy_selection();
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Up => self.move_cursor_up(),
+            KeyCode::Down => self.move_cursor_down(),
+            _ => {}
+        }
+        Ok(false)
+    }
+
     fn execute_command(&mut self) -> io::Result<bool> {
         let command = self.command_buffer.clone();
         let command = command.trim();
         
         match command {
-            "w" => self.save_file(None)?,
+            "w" => {
+                match self.save_file(None) {
+                    Ok(_) => self.debug_messages.push("File saved successfully".to_string()),
+                    Err(e) => self.debug_messages.push(format!("Error saving file: {}", e)),
+                }
+            },
             "q" => return Ok(true),
             "wq" => {
-                self.save_file(None)?;
-                return Ok(true);
+                match self.save_file(None) {
+                    Ok(_) => return Ok(true),
+                    Err(e) => self.debug_messages.push(format!("Error saving file: {}", e)),
+                }
             },
             _ if command.starts_with("w ") => {
                 let filename = command.get(2..).map(|s| s.trim());
-                self.save_file(filename)?;
+                match self.save_file(filename) {
+                    Ok(_) => self.debug_messages.push(format!("File saved as: {}", filename.unwrap_or("Unknown"))),
+                    Err(e) => self.debug_messages.push(format!("Error saving file: {}", e)),
+                }
             },
             _ if command.starts_with("e ") => {
                 let filename = &command[2..];
                 match self.open_file(filename) {
                     Ok(_) => {
-                        self.current_file = Some(filename.to_string());
                         self.debug_messages.push(format!("File opened: {}", filename));
                     },
                     Err(e) => self.debug_messages.push(format!("Error opening file: {}", e)),
@@ -252,7 +287,6 @@ impl Editor {
                 self.debug_messages.push(format!("Unknown command: {}", command));
             }
         }
-        self.command_buffer.clear();
         Ok(false)
     }
 
@@ -302,6 +336,7 @@ impl Editor {
         self.content[y].insert(x, c);
         self.cursor_position = (x + 1, y);
     }
+
     fn insert_newline(&mut self) {
         let (x, y) = self.cursor_position;
         let current_line = self.content[y].split_off(x);
@@ -347,36 +382,60 @@ impl Editor {
     fn delete_line(&mut self) {
         let (_, y) = self.cursor_position;
         if self.content.len() > 1 {
-            self.clipboard = self.content.remove(y);
+            self.content.remove(y);
             if y == self.content.len() {
                 self.cursor_position = (0, y - 1);
             }
         } else {
-            self.clipboard = self.content[0].clone();
             self.content[0].clear();
         }
     }
 
     fn yank_line(&mut self) {
         let (_, y) = self.cursor_position;
-        self.clipboard = self.content[y].clone();
+        if let Err(e) = self.clipboard_context.set_contents(self.content[y].clone()) {
+            self.debug_messages.push(format!("Failed to yank line to clipboard: {}", e));
+        } else {
+            self.debug_messages.push("Line yanked to clipboard".to_string());
+        }
     }
 
     fn paste_after(&mut self) {
-        let (_, y) = self.cursor_position;
-        self.content.insert(y + 1, self.clipboard.clone());
-        self.cursor_position = (0, y + 1);
+        if let Ok(content) = self.clipboard_context.get_contents() {
+            let (_, y) = self.cursor_position;
+            self.content.insert(y + 1, content);
+            self.cursor_position = (0, y + 1);
+            self.debug_messages.push("Clipboard content pasted".to_string());
+        } else {
+            self.debug_messages.push("Failed to paste from clipboard".to_string());
+        }
     }
 
-    fn paste_before(&mut self) {
-        let (_, y) = self.cursor_position;
-        self.content.insert(y, self.clipboard.clone());
+    fn copy_selection(&mut self) {
+        let (start, end) = if self.visual_start.1 <= self.cursor_position.1 {
+            (self.visual_start, self.cursor_position)
+        } else {
+            (self.cursor_position, self.visual_start)
+        };
+        
+        let content = self.content[start.1..=end.1].join("\n");
+        if let Err(e) = self.clipboard_context.set_contents(content) {
+            self.debug_messages.push(format!("Failed to copy to clipboard: {}", e));
+        } else {
+            self.debug_messages.push(format!("{} lines copied to clipboard", end.1 - start.1 + 1));
+        }
     }
 
-    fn undo(&mut self) {
-    }
-
-    fn redo(&mut self) {
+    fn paste_clipboard(&mut self) {
+        if let Ok(content) = self.clipboard_context.get_contents() {
+            let (_, y) = self.cursor_position;
+            let new_lines: Vec<String> = content.lines().map(String::from).collect();
+            self.content.splice(y+1..y+1, new_lines);
+            self.cursor_position = (0, y + 1);
+            self.debug_messages.push("Clipboard content pasted".to_string());
+        } else {
+            self.debug_messages.push("Failed to paste from clipboard".to_string());
+        }
     }
 
     fn save_file(&mut self, filename: Option<&str>) -> io::Result<()> {
@@ -385,10 +444,9 @@ impl Editor {
         } else if let Some(ref name) = self.current_file {
             name.clone()
         } else {
-            self.debug_messages.push("No filename specified. Use :w <filename> to save.".to_string());
-            return Ok(());
+            return Err(io::Error::new(io::ErrorKind::Other, "No filename specified. Use :w <filename> to save."));
         };
-
+    
         let mut file = fs::File::create(&filename)?;
         for line in &self.content {
             writeln!(file, "{}", line)?;
@@ -397,7 +455,7 @@ impl Editor {
         self.debug_messages.push(format!("File saved: {}", filename));
         Ok(())
     }
-
+    
     fn open_file(&mut self, filename: &str) -> io::Result<()> {
         let content = fs::read_to_string(filename)?;
         self.content = if content.is_empty() {
@@ -406,6 +464,7 @@ impl Editor {
             content.lines().map(String::from).collect()
         };
         self.cursor_position = (0, 0);
+        self.current_file = Some(filename.to_string());
         
         if let Some(extension) = Path::new(filename).extension() {
             if let Some(ext_str) = extension.to_str() {
@@ -438,6 +497,7 @@ impl Editor {
             Mode::Normal => "NORMAL",
             Mode::Insert => "INSERT",
             Mode::Command => "COMMAND",
+            Mode::Visual => "VISUAL",
         };
 
         let block = Block::default()
@@ -447,7 +507,8 @@ impl Editor {
                 Style::default().add_modifier(Modifier::BOLD),
             ));
 
-        let syntax = self.ps.find_syntax_by_extension(&self.syntax)
+        let syntax = self.ps.find_syntax_by_extension("rs")
+            .or_else(|| self.ps.find_syntax_by_name(&self.syntax))
             .unwrap_or_else(|| self.ps.find_syntax_plain_text());
         let mut h = HighlightLines::new(syntax, &self.ts.themes["base16-ocean.dark"]);
 
