@@ -16,7 +16,9 @@ use tui::{
     widgets::{Block, Borders, Paragraph},
     Frame, Terminal,
 };
-use unicode_width::UnicodeWidthStr;
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{ThemeSet, Style as SyntectStyle};
+use syntect::parsing::SyntaxSet;
 
 #[derive(PartialEq)]
 enum Mode {
@@ -33,6 +35,10 @@ struct Editor {
     debug_messages: Vec<String>,
     command_buffer: String,
     current_file: Option<String>,
+    ps: SyntaxSet,
+    ts: ThemeSet,
+    syntax: String,
+    cursor_style: Style,
 }
 
 impl Editor {
@@ -45,13 +51,20 @@ impl Editor {
             debug_messages: Vec::new(),
             command_buffer: String::new(),
             current_file: None,
+            ps: SyntaxSet::load_defaults_newlines(),
+            ts: ThemeSet::load_defaults(),
+            syntax: "Plain Text".to_string(),
+            cursor_style: Style::default().fg(Color::Yellow),
         }
     }
 
     fn with_file(filename: &str) -> Result<Self, io::Error> {
         let mut editor = Self::new();
-        editor.open_file(filename)?;
-        editor.current_file = Some(filename.to_string());
+        if Path::new(filename).exists() {
+            editor.open_file(filename)?;
+        } else {
+            editor.current_file = Some(filename.to_string());
+        }
         Ok(editor)
     }
 
@@ -283,10 +296,12 @@ impl Editor {
 
     fn insert_char(&mut self, c: char) {
         let (x, y) = self.cursor_position;
+        if y >= self.content.len() {
+            self.content.push(String::new());
+        }
         self.content[y].insert(x, c);
         self.cursor_position = (x + 1, y);
     }
-
     fn insert_newline(&mut self) {
         let (x, y) = self.cursor_position;
         let current_line = self.content[y].split_off(x);
@@ -370,7 +385,7 @@ impl Editor {
         } else if let Some(ref name) = self.current_file {
             name.clone()
         } else {
-            self.debug_messages.push("Enter filename to save:".to_string());
+            self.debug_messages.push("No filename specified. Use :w <filename> to save.".to_string());
             return Ok(());
         };
 
@@ -385,8 +400,21 @@ impl Editor {
 
     fn open_file(&mut self, filename: &str) -> io::Result<()> {
         let content = fs::read_to_string(filename)?;
-        self.content = content.lines().map(String::from).collect();
+        self.content = if content.is_empty() {
+            vec![String::new()]
+        } else {
+            content.lines().map(String::from).collect()
+        };
         self.cursor_position = (0, 0);
+        
+        if let Some(extension) = Path::new(filename).extension() {
+            if let Some(ext_str) = extension.to_str() {
+                if let Some(syntax) = self.ps.find_syntax_by_extension(ext_str) {
+                    self.syntax = syntax.name.clone();
+                }
+            }
+        }
+        
         Ok(())
     }
 
@@ -394,7 +422,11 @@ impl Editor {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .margin(1)
-            .constraints([Constraint::Length(6), Constraint::Min(1)].as_ref())
+            .constraints([
+                Constraint::Length(6),
+                Constraint::Min(1),
+                Constraint::Length(1)
+            ].as_ref())
             .split(f.size());
 
         let debug_messages: Vec<Spans> = self.debug_messages.iter().map(|m| Spans::from(m.clone())).collect();
@@ -415,17 +447,52 @@ impl Editor {
                 Style::default().add_modifier(Modifier::BOLD),
             ));
 
-        let mut text = Vec::new();
-        for line in &self.content {
-            text.push(Spans::from(line.clone()));
-        }
+        let syntax = self.ps.find_syntax_by_extension(&self.syntax)
+            .unwrap_or_else(|| self.ps.find_syntax_plain_text());
+        let mut h = HighlightLines::new(syntax, &self.ts.themes["base16-ocean.dark"]);
 
-        if self.mode == Mode::Command {
-            text.push(Spans::from(format!(":{}", self.command_buffer)));
+        let mut text = Vec::new();
+        for (index, line) in self.content.iter().enumerate() {
+            let ranges: Vec<(SyntectStyle, &str)> = h.highlight_line(line, &self.ps).unwrap();
+            let mut styled_spans = Vec::new();
+            for (style, content) in ranges {
+                let color = style.foreground;
+                styled_spans.push(Span::styled(
+                    content.to_string(),
+                    Style::default().fg(Color::Rgb(color.r, color.g, color.b))
+                ));
+            }
+            
+            if index == self.cursor_position.1 {
+                let mut line_spans = Vec::new();
+                let mut current_len = 0;
+                for span in styled_spans {
+                    let span_len = span.content.len();
+                    if current_len + span_len > self.cursor_position.0 {
+                        let (before, after) = span.content.split_at(self.cursor_position.0 - current_len);
+                        line_spans.push(Span::styled(before.to_string(), span.style));
+                        line_spans.push(Span::styled("|", self.cursor_style));
+                        line_spans.push(Span::styled(after.to_string(), span.style));
+                        break;
+                    } else {
+                        line_spans.push(span);
+                        current_len += span_len;
+                    }
+                }
+                text.push(Spans::from(line_spans));
+            } else {
+                text.push(Spans::from(styled_spans));
+            }
         }
 
         let paragraph = Paragraph::new(text).block(block);
         f.render_widget(paragraph, chunks[1]);
+
+        if self.mode == Mode::Command {
+            let command_text = Spans::from(format!(":{}", self.command_buffer));
+            let command_paragraph = Paragraph::new(vec![command_text]);
+            f.render_widget(command_paragraph, chunks[2]);
+        }
 
         let cursor_x = self.cursor_position.0 as u16 + 2;
         let cursor_y = self.cursor_position.1 as u16 + 8;
