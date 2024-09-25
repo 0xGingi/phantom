@@ -5,9 +5,11 @@ PhantomEditor is a lightweight, terminal-based text editor written in Rust. It c
 ## Features
 
 - Simple and intuitive interface
-- Vim-like modal editing (Normal, Insert, and Command modes)
+- Vim-like modal editing (Normal, Insert, Visual, and Command modes)
 - Basic text manipulation operations
 - File opening and saving capabilities
+- Syntax highlighting
+- System clipboard integration
 - Customizable (extendable through Rust)
 
 ## Installation
@@ -16,7 +18,7 @@ PhantomEditor is a lightweight, terminal-based text editor written in Rust. It c
 
 2. Clone this repository:
    ```
-   git clone https://github.com/yourusername/PhantomEditor.git
+   git clone https://github.com/0xGingi/PhantomEditor.git
    ```
 
 3. Navigate to the project directory:
@@ -38,7 +40,6 @@ To start PhantomEditor:
 ./PhantomEditor [filename]
 ```
 
-
 If a filename is provided, PhantomEditor will attempt to open that file. Otherwise, it will start with a blank document.
 
 ## Keybinds and Commands
@@ -55,10 +56,10 @@ If a filename is provided, PhantomEditor will attempt to open that file. Otherwi
 - `O`: Insert a new line above and enter Insert mode
 - `dd`: Delete the current line
 - `yy`: Yank (copy) the current line
-- `p`: Paste the copied/deleted line after the current line
-- `P`: Paste the copied/deleted line before the current line
-- `u`: Undo (placeholder, not implemented)
-- `r`: Redo (placeholder, not implemented)
+- `p`: Paste after the current line
+- `Ctrl+Y`: Copy the current line to system clipboard
+- `Ctrl+P`: Paste from system clipboard below the current line
+- `v`: Enter Visual mode
 - Arrow keys: Move the cursor
 - `Home`: Move to the start of the line
 - `End`: Move to the end of the line
@@ -72,6 +73,12 @@ If a filename is provided, PhantomEditor will attempt to open that file. Otherwi
 - `Backspace`: Delete the character before the cursor
 - Any character key: Insert the character at the cursor position
 
+### Visual Mode
+
+- `Esc`: Return to Normal mode
+- `y`: Copy selected text to system clipboard
+- Arrow keys: Extend selection
+
 ### Command Mode
 
 - `:w`: Save the current file
@@ -79,3 +86,7 @@ If a filename is provided, PhantomEditor will attempt to open that file. Otherwi
 - `:q`: Quit the editor
 - `:wq`: Save and quit
 - `:e filename`: Open 'filename' for editing
+
+## Debug Output
+
+PhantomEditor includes a debug output area that displays information about key presses, cursor position, and the results of operations like saving files.
