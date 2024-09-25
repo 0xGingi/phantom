@@ -4,7 +4,6 @@ PhantomEditor is a lightweight, terminal-based text editor written in Rust. It c
 
 ![image](https://github.com/user-attachments/assets/f490cbf1-f060-4c6c-9266-1b4659b2b9f2)
 
-
 ## Features
 
 - Simple and intuitive interface
@@ -75,6 +74,11 @@ If a directory is provided, PhantomEditor will enter directory navigation mode
 - `:`: Enter Command mode
 - `Ctrl+B`: Toggle debug menu visibility
 - `Ctrl+E`: Enter directory navigation mode
+- `/`: Enter Search mode
+- `n`: Go to next search result
+- `N`: Go to previous search result
+- `PageUp`: Scroll up one page
+- `PageDown`: Scroll down one page
 
 ### Insert Mode
 
@@ -96,6 +100,11 @@ If a directory is provided, PhantomEditor will enter directory navigation mode
 - `:q`: Quit the editor
 - `:wq`: Save and quit
 - `:e filename`: Open 'filename' for editing
+
+### Search Mode
+
+- `Enter`: Perform search and return to Normal mode
+- `Esc`: Cancel search and return to Normal mode
 
 ## Debug Output
 
