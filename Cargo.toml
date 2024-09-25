@@ -1,0 +1,11 @@
+[package]
+name = "PhantomEditor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crossterm = "0.26"
+tui = { version = "0.19", default-features = false, features = ['crossterm'] }
+ropey = "1.5"
+syntect = "5.0"
+unicode-width = "0.1"
