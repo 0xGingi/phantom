@@ -6,14 +6,14 @@ use crossterm::{
 use std::{error::Error, io};
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::env;
 use tui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Span, Spans},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, List, ListItem, ListState},
     Frame, Terminal,
 };
 use syntect::easy::HighlightLines;
@@ -27,6 +27,93 @@ enum Mode {
     Insert,
     Command,
     Visual,
+    FileSelect,
+}
+
+struct FileSelector {
+    current_dir: PathBuf,
+    entries: Vec<PathBuf>,
+    selected_index: usize,
+}
+
+impl FileSelector {
+    fn new(path: &Path) -> io::Result<Self> {
+        let current_dir = path.to_path_buf();
+        let entries = fs::read_dir(&current_dir)?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
+        
+        Ok(FileSelector {
+            current_dir,
+            entries,
+            selected_index: 0,
+        })
+    }
+
+    fn up(&mut self) {
+        if self.selected_index > 0 {
+            self.selected_index -= 1;
+        }
+    }
+
+    fn down(&mut self) {
+        if self.selected_index < self.entries.len() - 1 {
+            self.selected_index += 1;
+        }
+    }
+
+    fn enter(&mut self) -> io::Result<Option<PathBuf>> {
+        if self.selected_index < self.entries.len() {
+            let selected = &self.entries[self.selected_index];
+            if selected.is_dir() {
+                self.current_dir = selected.clone();
+                self.entries = fs::read_dir(&self.current_dir)?
+                    .filter_map(|entry| entry.ok())
+                    .map(|entry| entry.path())
+                    .collect::<Vec<_>>();
+                self.selected_index = 0;
+                Ok(None)
+            } else {
+                Ok(Some(selected.clone()))
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn render<B: tui::backend::Backend>(&self, f: &mut Frame<B>) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(1)
+            .constraints([Constraint::Percentage(100)].as_ref())
+            .split(f.size());
+    
+        let items: Vec<ListItem> = self.entries
+            .iter()
+            .map(|path| {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                if path.is_dir() {
+                    ListItem::new(format!("📁 {}", name))
+                } else {
+                    ListItem::new(format!("📄 {}", name))
+                }
+            })
+            .collect();
+    
+        let list = List::new(items)
+            .block(Block::default().title("File Selector").borders(Borders::ALL))
+            .highlight_style(
+                Style::default()
+                    .bg(Color::Yellow)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD),
+            );
+    
+        let mut state = ListState::default();
+        state.select(Some(self.selected_index));
+        f.render_stateful_widget(list, chunks[0], &mut state);
+    }
 }
 
 struct Editor {
@@ -42,6 +129,7 @@ struct Editor {
     cursor_style: Style,
     clipboard_context: ClipboardContext,
     visual_start: (usize, usize),
+    file_selector: Option<FileSelector>,
 }
 
 impl Editor {
@@ -59,12 +147,13 @@ impl Editor {
             cursor_style: Style::default().fg(Color::Yellow),
             clipboard_context: ClipboardProvider::new().expect("Failed to initialize clipboard"),
             visual_start: (0, 0),
+            file_selector: None,
         }
     }
 
-    fn with_file(filename: &str) -> Result<Self, io::Error> {
+    fn with_file(path: &Path) -> Result<Self, io::Error> {
         let mut editor = Self::new();
-        editor.open_file(filename)?;
+        editor.open_file(path)?;
         Ok(editor)
     }
 
@@ -130,6 +219,7 @@ impl Editor {
                 Ok(false)
             },
             Mode::Visual => self.handle_visual_mode(key),
+            Mode::FileSelect => self.handle_file_select_mode(key),
         }
     }
 
@@ -201,12 +291,6 @@ impl Editor {
             KeyCode::Enter => self.insert_newline(),
             KeyCode::Backspace => self.backspace(),
             KeyCode::Char(c) => self.insert_char(c),
-            KeyCode::Left => self.move_cursor_left(),
-            KeyCode::Down => self.move_cursor_down(),
-            KeyCode::Up => self.move_cursor_up(),
-            KeyCode::Right => self.move_cursor_right(),
-            KeyCode::Home => self.move_cursor_start_of_line(),
-            KeyCode::End => self.move_cursor_end_of_line(),
             _ => {}
         }
         Ok(false)
@@ -214,25 +298,13 @@ impl Editor {
 
     fn handle_command_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
         match key.code {
-            KeyCode::Enter => {
-                self.mode = Mode::Normal;
-                Ok(true)
-            }
-            KeyCode::Esc => {
-                self.mode = Mode::Normal;
-                self.command_buffer.clear();
-                Ok(false)
-            }
-            KeyCode::Char(c) => {
-                self.command_buffer.push(c);
-                Ok(false)
-            }
-            KeyCode::Backspace => {
-                self.command_buffer.pop();
-                Ok(false)
-            }
-            _ => Ok(false)
+            KeyCode::Enter => return Ok(true),
+            KeyCode::Char(c) => self.command_buffer.push(c),
+            KeyCode::Backspace => { self.command_buffer.pop(); }
+            KeyCode::Esc => self.mode = Mode::Normal,
+            _ => {}
         }
+        Ok(false)
     }
 
     fn handle_visual_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
@@ -244,7 +316,31 @@ impl Editor {
             }
             KeyCode::Up => self.move_cursor_up(),
             KeyCode::Down => self.move_cursor_down(),
+            KeyCode::Left => self.move_cursor_left(),
+            KeyCode::Right => self.move_cursor_right(),
             _ => {}
+        }
+        Ok(false)
+    }
+
+    fn handle_file_select_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
+        if let Some(file_selector) = &mut self.file_selector {
+            match key.code {
+                KeyCode::Up => file_selector.up(),
+                KeyCode::Down => file_selector.down(),
+                KeyCode::Enter => {
+                    if let Some(path) = file_selector.enter()? {
+                        self.open_file(&path)?;
+                        self.mode = Mode::Normal;
+                        self.file_selector = None;
+                    }
+                }
+                KeyCode::Esc => {
+                    self.mode = Mode::Normal;
+                    self.file_selector = None;
+                }
+                _ => {}
+            }
         }
         Ok(false)
     }
@@ -276,7 +372,7 @@ impl Editor {
             },
             _ if command.starts_with("e ") => {
                 let filename = &command[2..];
-                match self.open_file(filename) {
+                match self.open_file(Path::new(filename)) {
                     Ok(_) => {
                         self.debug_messages.push(format!("File opened: {}", filename));
                     },
@@ -287,6 +383,7 @@ impl Editor {
                 self.debug_messages.push(format!("Unknown command: {}", command));
             }
         }
+        self.mode = Mode::Normal;
         Ok(false)
     }
 
@@ -299,7 +396,7 @@ impl Editor {
 
     fn move_cursor_right(&mut self) {
         let (x, y) = self.cursor_position;
-        if x < self.content[y].len() {
+        if y < self.content.len() && x < self.content[y].len() {
             self.cursor_position = (x + 1, y);
         }
     }
@@ -319,13 +416,12 @@ impl Editor {
     }
 
     fn move_cursor_start_of_line(&mut self) {
-        let (_, y) = self.cursor_position;
-        self.cursor_position = (0, y);
+        self.cursor_position.0 = 0;
     }
 
     fn move_cursor_end_of_line(&mut self) {
-        let (_, y) = self.cursor_position;
-        self.cursor_position = (self.content[y].len(), y);
+        let y = self.cursor_position.1;
+        self.cursor_position.0 = self.content[y].len();
     }
 
     fn insert_char(&mut self, c: char) {
@@ -339,8 +435,10 @@ impl Editor {
 
     fn insert_newline(&mut self) {
         let (x, y) = self.cursor_position;
-        let current_line = self.content[y].split_off(x);
-        self.content.insert(y + 1, current_line);
+        let current_line = self.content[y].clone();
+        let (left, right) = current_line.split_at(x);
+        self.content[y] = left.to_string();
+        self.content.insert(y + 1, right.to_string());
         self.cursor_position = (0, y + 1);
     }
 
@@ -368,19 +466,19 @@ impl Editor {
     }
 
     fn insert_line_below(&mut self) {
-        let (_, y) = self.cursor_position;
+        let y = self.cursor_position.1;
         self.content.insert(y + 1, String::new());
         self.cursor_position = (0, y + 1);
     }
 
     fn insert_line_above(&mut self) {
-        let (_, y) = self.cursor_position;
+        let y = self.cursor_position.1;
         self.content.insert(y, String::new());
         self.cursor_position = (0, y);
     }
 
     fn delete_line(&mut self) {
-        let (_, y) = self.cursor_position;
+        let y = self.cursor_position.1;
         if self.content.len() > 1 {
             self.content.remove(y);
             if y == self.content.len() {
@@ -446,7 +544,7 @@ impl Editor {
         } else {
             return Err(io::Error::new(io::ErrorKind::Other, "No filename specified. Use :w <filename> to save."));
         };
-    
+
         let mut file = fs::File::create(&filename)?;
         for line in &self.content {
             writeln!(file, "{}", line)?;
@@ -455,18 +553,18 @@ impl Editor {
         self.debug_messages.push(format!("File saved: {}", filename));
         Ok(())
     }
-    
-    fn open_file(&mut self, filename: &str) -> io::Result<()> {
-        let content = fs::read_to_string(filename)?;
+
+    fn open_file(&mut self, path: &Path) -> io::Result<()> {
+        let content = fs::read_to_string(path)?;
         self.content = if content.is_empty() {
             vec![String::new()]
         } else {
             content.lines().map(String::from).collect()
         };
         self.cursor_position = (0, 0);
-        self.current_file = Some(filename.to_string());
+        self.current_file = Some(path.to_string_lossy().into_owned());
         
-        if let Some(extension) = Path::new(filename).extension() {
+        if let Some(extension) = path.extension() {
             if let Some(ext_str) = extension.to_str() {
                 if let Some(syntax) = self.ps.find_syntax_by_extension(ext_str) {
                     self.syntax = syntax.name.clone();
@@ -478,6 +576,13 @@ impl Editor {
     }
 
     fn ui<B: tui::backend::Backend>(&self, f: &mut Frame<B>) {
+        if self.mode == Mode::FileSelect {
+            if let Some(file_selector) = &self.file_selector {
+                file_selector.render(f);
+            }
+            return;
+        }
+
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .margin(1)
@@ -487,31 +592,32 @@ impl Editor {
                 Constraint::Length(1)
             ].as_ref())
             .split(f.size());
-    
+
         let debug_messages: Vec<Spans> = self.debug_messages.iter().map(|m| Spans::from(m.clone())).collect();
         let debug_paragraph = Paragraph::new(debug_messages)
             .block(Block::default().borders(Borders::ALL).title("Debug Output"));
         f.render_widget(debug_paragraph, chunks[0]);
-    
+
         let mode_indicator = match self.mode {
             Mode::Normal => "NORMAL",
             Mode::Insert => "INSERT",
             Mode::Command => "COMMAND",
             Mode::Visual => "VISUAL",
+            Mode::FileSelect => "FILE SELECT",
         };
-    
+
         let block = Block::default()
             .borders(Borders::ALL)
             .title(Span::styled(
                 format!("Editor - {}", mode_indicator),
                 Style::default().add_modifier(Modifier::BOLD),
             ));
-    
+
         let syntax = self.ps.find_syntax_by_extension("rs")
             .or_else(|| self.ps.find_syntax_by_name(&self.syntax))
             .unwrap_or_else(|| self.ps.find_syntax_plain_text());
         let mut h = HighlightLines::new(syntax, &self.ts.themes["base16-ocean.dark"]);
-    
+
         let mut text = Vec::new();
         for (index, line) in self.content.iter().enumerate() {
             let ranges: Vec<(SyntectStyle, &str)> = h.highlight_line(line, &self.ps).unwrap();
@@ -551,16 +657,16 @@ impl Editor {
                 text.push(Spans::from(styled_spans));
             }
         }
-    
+
         let paragraph = Paragraph::new(text).block(block);
         f.render_widget(paragraph, chunks[1]);
-    
+
         if self.mode == Mode::Command {
             let command_text = Spans::from(format!(":{}", self.command_buffer));
             let command_paragraph = Paragraph::new(vec![command_text]);
             f.render_widget(command_paragraph, chunks[2]);
         }
-    
+
         let cursor_x = self.cursor_position.0 as u16 + 2;
         let cursor_y = self.cursor_position.1 as u16 + 8;
         f.set_cursor(
@@ -573,11 +679,19 @@ impl Editor {
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
     let mut editor = if args.len() > 1 {
-        match Editor::with_file(&args[1]) {
-            Ok(ed) => ed,
-            Err(e) => {
-                eprintln!("Error opening file: {}", e);
-                return Ok(());
+        let path = Path::new(&args[1]);
+        if path.is_dir() {
+            let mut editor = Editor::new();
+            editor.mode = Mode::FileSelect;
+            editor.file_selector = Some(FileSelector::new(path)?);
+            editor
+        } else {
+            match Editor::with_file(path) {
+                Ok(ed) => ed,
+                Err(e) => {
+                    eprintln!("Error opening file: {}", e);
+                    return Ok(());
+                }
             }
         }
     } else {
