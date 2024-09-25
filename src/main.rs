@@ -487,31 +487,31 @@ impl Editor {
                 Constraint::Length(1)
             ].as_ref())
             .split(f.size());
-
+    
         let debug_messages: Vec<Spans> = self.debug_messages.iter().map(|m| Spans::from(m.clone())).collect();
         let debug_paragraph = Paragraph::new(debug_messages)
             .block(Block::default().borders(Borders::ALL).title("Debug Output"));
         f.render_widget(debug_paragraph, chunks[0]);
-
+    
         let mode_indicator = match self.mode {
             Mode::Normal => "NORMAL",
             Mode::Insert => "INSERT",
             Mode::Command => "COMMAND",
             Mode::Visual => "VISUAL",
         };
-
+    
         let block = Block::default()
             .borders(Borders::ALL)
             .title(Span::styled(
                 format!("Editor - {}", mode_indicator),
                 Style::default().add_modifier(Modifier::BOLD),
             ));
-
+    
         let syntax = self.ps.find_syntax_by_extension("rs")
             .or_else(|| self.ps.find_syntax_by_name(&self.syntax))
             .unwrap_or_else(|| self.ps.find_syntax_plain_text());
         let mut h = HighlightLines::new(syntax, &self.ts.themes["base16-ocean.dark"]);
-
+    
         let mut text = Vec::new();
         for (index, line) in self.content.iter().enumerate() {
             let ranges: Vec<(SyntectStyle, &str)> = h.highlight_line(line, &self.ps).unwrap();
@@ -529,32 +529,38 @@ impl Editor {
                 let mut current_len = 0;
                 for span in styled_spans {
                     let span_len = span.content.len();
-                    if current_len + span_len > self.cursor_position.0 {
+                    if current_len <= self.cursor_position.0 && self.cursor_position.0 < current_len + span_len {
                         let (before, after) = span.content.split_at(self.cursor_position.0 - current_len);
-                        line_spans.push(Span::styled(before.to_string(), span.style));
-                        line_spans.push(Span::styled("|", self.cursor_style));
-                        line_spans.push(Span::styled(after.to_string(), span.style));
-                        break;
+                        if !before.is_empty() {
+                            line_spans.push(Span::styled(before.to_string(), span.style));
+                        }
+                        line_spans.push(Span::styled("|".to_string(), self.cursor_style));
+                        if !after.is_empty() {
+                            line_spans.push(Span::styled(after.to_string(), span.style));
+                        }
                     } else {
                         line_spans.push(span);
-                        current_len += span_len;
                     }
+                    current_len += span_len;
+                }
+                if self.cursor_position.0 >= current_len {
+                    line_spans.push(Span::styled("|".to_string(), self.cursor_style));
                 }
                 text.push(Spans::from(line_spans));
             } else {
                 text.push(Spans::from(styled_spans));
             }
         }
-
+    
         let paragraph = Paragraph::new(text).block(block);
         f.render_widget(paragraph, chunks[1]);
-
+    
         if self.mode == Mode::Command {
             let command_text = Spans::from(format!(":{}", self.command_buffer));
             let command_paragraph = Paragraph::new(vec![command_text]);
             f.render_widget(command_paragraph, chunks[2]);
         }
-
+    
         let cursor_x = self.cursor_position.0 as u16 + 2;
         let cursor_y = self.cursor_position.1 as u16 + 8;
         f.set_cursor(
