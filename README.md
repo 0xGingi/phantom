@@ -14,6 +14,7 @@ PhantomEditor is a lightweight, terminal-based text editor written in Rust. It c
 - Directory Navigation
 - Debug Output Menu
 - Search in file
+- Undo and Redo
 
 ## Installation
 
@@ -82,6 +83,8 @@ You can change the keybinds in the config file
 - `N`: Go to previous search result
 - `PageUp`: Scroll up one page
 - `PageDown`: Scroll down one page
+- `Ctrl+U`: Undo
+- `Ctrl+R`: Redo
 
 ### Insert Mode
 

@@ -22,6 +22,7 @@ use syntect::parsing::SyntaxSet;
 use clipboard::{ClipboardContext, ClipboardProvider};
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 
 #[derive(Deserialize, Serialize, Clone)]
 struct Keybindings {
@@ -31,6 +32,12 @@ struct Keybindings {
     command_mode: HashMap<String, String>,
     file_select_mode: HashMap<String, String>,
     search_mode: HashMap<String, String>,
+}
+
+#[derive(Clone)]
+struct EditOperation {
+    content: Vec<String>,
+    cursor_position: (usize, usize),
 }
 
 impl Keybindings {
@@ -54,6 +61,8 @@ impl Keybindings {
                 ("N".to_string(), "previous_search_result".to_string()),
                 ("Ctrl+y".to_string(), "copy_selection".to_string()),
                 ("Ctrl+p".to_string(), "paste_clipboard".to_string()),
+                ("Ctrl+u".to_string(), "undo".to_string()),
+                ("Ctrl+r".to_string(), "redo".to_string()),
             ].iter().cloned().collect(),
             insert_mode: [
                 ("Esc".to_string(), "exit_insert_mode".to_string()),
@@ -206,6 +215,8 @@ struct Editor {
     scroll_offset: usize,
     horizontal_scroll: usize,
     keybindings: Keybindings,
+    undo_stack: VecDeque<EditOperation>,
+    redo_stack: VecDeque<EditOperation>,
 }
 
 impl Editor {
@@ -232,6 +243,47 @@ impl Editor {
             scroll_offset: 0,
             horizontal_scroll: 0,
             keybindings,
+            undo_stack: VecDeque::new(),
+            redo_stack: VecDeque::new(),
+        }
+    }
+
+    fn save_state(&mut self) {
+        let operation = EditOperation {
+            content: self.content.clone(),
+            cursor_position: self.cursor_position,
+        };
+        self.undo_stack.push_front(operation);
+        self.redo_stack.clear();
+
+        if self.undo_stack.len() > 100 {
+            self.undo_stack.pop_back();
+        }
+    }
+
+    fn undo(&mut self) {
+        if let Some(operation) = self.undo_stack.pop_front() {
+            let current_state = EditOperation {
+                content: self.content.clone(),
+                cursor_position: self.cursor_position,
+            };
+            self.redo_stack.push_front(current_state);
+
+            self.content = operation.content;
+            self.cursor_position = operation.cursor_position;
+        }
+    }
+
+    fn redo(&mut self) {
+        if let Some(operation) = self.redo_stack.pop_front() {
+            let current_state = EditOperation {
+                content: self.content.clone(),
+                cursor_position: self.cursor_position,
+            };
+            self.undo_stack.push_front(current_state);
+
+            self.content = operation.content;
+            self.cursor_position = operation.cursor_position;
         }
     }
 
@@ -402,6 +454,8 @@ impl Editor {
                 "previous_search_result" => self.previous_search_result(),
                 "copy_selection" => self.copy_selection(),
                 "paste_clipboard" => self.paste_clipboard(),
+                "undo" => self.undo(),
+                "redo" => self.redo(),
                 _ => {},
             }
         } else {
@@ -570,6 +624,7 @@ impl Editor {
     }
 
     fn insert_char(&mut self, c: char) {
+        self.save_state();
         let line = &mut self.content[self.cursor_position.1];
         line.insert(self.cursor_position.0, c);
         self.cursor_position.0 += 1;
@@ -577,6 +632,7 @@ impl Editor {
     }
 
     fn insert_newline(&mut self) {
+        self.save_state();
         let current_line = &mut self.content[self.cursor_position.1];
         let rest_of_line = current_line.split_off(self.cursor_position.0);
         self.content.insert(self.cursor_position.1 + 1, rest_of_line);
@@ -608,6 +664,7 @@ impl Editor {
     }
 
     fn backspace(&mut self) {
+        self.save_state();
         if self.cursor_position.0 > 0 {
             let line = &mut self.content[self.cursor_position.1];
             line.remove(self.cursor_position.0 - 1);
@@ -621,6 +678,7 @@ impl Editor {
     }
 
     fn delete_char(&mut self) {
+        self.save_state();
         let line = &mut self.content[self.cursor_position.1];
         if self.cursor_position.0 < line.len() {
             line.remove(self.cursor_position.0);
@@ -631,6 +689,7 @@ impl Editor {
     }
 
     fn delete_line(&mut self) {
+        self.save_state();
         if self.content.len() > 1 {
             self.content.remove(self.cursor_position.1);
         } else {
@@ -643,11 +702,13 @@ impl Editor {
     }
 
     fn insert_line_below(&mut self) {
+        self.save_state();
         self.content.insert(self.cursor_position.1 + 1, String::new());
         self.cursor_position = (0, self.cursor_position.1 + 1);
     }
 
     fn insert_line_above(&mut self) {
+        self.save_state();
         self.content.insert(self.cursor_position.1, String::new());
         self.cursor_position.0 = 0;
     }
@@ -658,6 +719,7 @@ impl Editor {
     }
 
     fn paste_after(&mut self) {
+        self.save_state();
         if let Ok(contents) = self.clipboard_context.get_contents() {
             let lines: Vec<&str> = contents.split('\n').collect();
             if lines.len() == 1 {
@@ -708,6 +770,7 @@ impl Editor {
     }
 
     fn delete_selection(&mut self) {
+        self.save_state();
         let (start, end) = if self.visual_start <= self.cursor_position {
             (self.visual_start, self.cursor_position)
         } else {
@@ -728,6 +791,7 @@ impl Editor {
     }
 
     fn paste_clipboard(&mut self) {
+        self.save_state();
         if let Ok(contents) = self.clipboard_context.get_contents() {
             let lines: Vec<&str> = contents.split('\n').collect();
             for (i, &line) in lines.iter().enumerate() {
