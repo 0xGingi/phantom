@@ -23,6 +23,21 @@ use clipboard::{ClipboardContext, ClipboardProvider};
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use serde_json::Value;
+use std::fs::File;
+
+#[derive(Deserialize, Serialize, Clone)]
+struct ColorConfig {
+    background: String,
+    foreground: String,
+    cursor: String,
+    selection: String,
+    comment: String,
+    keyword: String,
+    string: String,
+    function: String,
+    number: String,
+}
 
 #[derive(Deserialize, Serialize, Clone)]
 struct Keybindings {
@@ -38,6 +53,30 @@ struct Keybindings {
 struct EditOperation {
     content: Vec<String>,
     cursor_position: (usize, usize),
+}
+
+impl ColorConfig {
+    fn default() -> Self {
+        ColorConfig {
+            background: "#1E1E1E".to_string(),
+            foreground: "#FFFFFF".to_string(),
+            cursor: "#FFFFFF".to_string(),
+            selection: "#264F78".to_string(),
+            comment: "#6A9955".to_string(),
+            keyword: "#569CD6".to_string(),
+            string: "#CE9178".to_string(),
+            function: "#DCDCAA".to_string(),
+            number: "#B5CEA8".to_string(),
+        }
+    }
+
+    fn from_json(json: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(json)
+    }
+
+    fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
+    }
 }
 
 impl Keybindings {
@@ -217,11 +256,13 @@ struct Editor {
     keybindings: Keybindings,
     undo_stack: VecDeque<EditOperation>,
     redo_stack: VecDeque<EditOperation>,
+    color_config: ColorConfig,
 }
 
 impl Editor {
     fn new() -> Self {
         let keybindings = Self::load_config().unwrap_or_else(|_| Keybindings::default());
+        let color_config = Self::load_color_config().unwrap_or_else(|_| ColorConfig::default());
         Editor {
             content: vec![String::new()],
             cursor_position: (0, 0),
@@ -245,7 +286,46 @@ impl Editor {
             keybindings,
             undo_stack: VecDeque::new(),
             redo_stack: VecDeque::new(),
+            color_config,
         }
+    }
+
+    fn parse_color(color_str: &str) -> Color {
+        if let Ok(rgb) = u32::from_str_radix(&color_str[1..], 16) {
+            Color::Rgb(
+                ((rgb >> 16) & 0xFF) as u8,
+                ((rgb >> 8) & 0xFF) as u8,
+                (rgb & 0xFF) as u8,
+            )
+        } else {
+            Color::Reset
+        }
+    }
+    
+    fn load_color_config() -> Result<ColorConfig, Box<dyn Error>> {
+        let config_dir = dirs::home_dir()
+            .ok_or("Could not find home directory")?
+            .join(".config")
+            .join("phantom");
+        let config_path = config_dir.join("colors.json");
+    
+        if !config_path.exists() {
+            Self::create_default_color_config(&config_path)?;
+        }
+    
+        let config_str = fs::read_to_string(&config_path)?;
+        let config = ColorConfig::from_json(&config_str)?;
+        Ok(config)
+    }
+
+    fn create_default_color_config(config_path: &PathBuf) -> Result<(), Box<dyn Error>> {
+        if let Some(parent) = config_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+    
+        let default_config = ColorConfig::default().to_json()?;
+        fs::write(config_path, default_config)?;
+        Ok(())
     }
 
     fn save_state(&mut self) {
@@ -907,14 +987,21 @@ impl Editor {
         let block = Block::default()
             .borders(Borders::ALL)
             .title(Span::styled(
-                format!("Editor - {}", mode_indicator),
-                Style::default().add_modifier(Modifier::BOLD),
-            ));
+                format!("Phantom - {}", mode_indicator),
+                Style::default()
+                .fg(Self::parse_color(&self.color_config.foreground))
+                .add_modifier(Modifier::BOLD),
+        ));
     
         let syntax = self.ps.find_syntax_by_extension("rs")
             .or_else(|| self.ps.find_syntax_by_name(&self.syntax))
             .unwrap_or_else(|| self.ps.find_syntax_plain_text());
-        let mut h = HighlightLines::new(syntax, &self.ts.themes["base16-ocean.dark"]);
+
+        let theme = &self.ts.themes["base16-ocean.dark"];
+        let background_color = Self::parse_color(&self.color_config.background);
+let foreground_color = Self::parse_color(&self.color_config.foreground);
+
+        let mut h = HighlightLines::new(syntax, theme);
     
         let editor_chunk_index = if self.show_debug { 1 } else { 0 };
         let editor_height = chunks[editor_chunk_index].height as usize - 2;
@@ -925,7 +1012,6 @@ impl Editor {
             .skip(self.scroll_offset)
             .take(editor_height)
             .enumerate();
-
 
         if self.cursor_position.1 < self.scroll_offset {
             self.scroll_offset = self.cursor_position.1;
@@ -992,8 +1078,10 @@ impl Editor {
             }
         }
     
-        let paragraph = Paragraph::new(text).block(block);
-        f.render_widget(paragraph, chunks[editor_chunk_index]);
+        let paragraph = Paragraph::new(text)
+        .block(block)
+        .style(Style::default().bg(Self::parse_color(&self.color_config.background)));
+    f.render_widget(paragraph, chunks[editor_chunk_index]);
     
         if self.show_debug {
             let debug_messages: Vec<Spans> = self.debug_messages.iter().map(|m| Spans::from(m.clone())).collect();

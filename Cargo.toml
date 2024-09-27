@@ -1,15 +1,16 @@
 [package]
 name = "PhantomEditor"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 
 [dependencies]
 crossterm = "0.26"
 tui = { version = "0.19", default-features = false, features = ['crossterm'] }
 ropey = "1.5"
-syntect = "5.0"
+syntect = { version = "5.0", features = ["default-fancy"] }
 unicode-width = "0.1"
 clipboard = "0.5.0"
 toml = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 dirs = "5.0"
+serde_json = "1.0"
