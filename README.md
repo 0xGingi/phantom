@@ -11,10 +11,11 @@ PhantomEditor is a lightweight, terminal-based text editor written in Rust. It c
 - Syntax highlighting
 - System clipboard integration
 - Customizable (Currently Keybindings and Colors)
-- Directory Navigation
+- Directory Navigation (Sidebar)
 - Debug Output Menu
 - Search in file
 - Undo and Redo
+- Tabs
 
 ## Installation
 
@@ -86,6 +87,10 @@ You can change the keybinds in the config file and the colors in the colors file
 - `PageDown`: Scroll down one page
 - `Ctrl+U`: Undo
 - `Ctrl+R`: Redo
+- `Ctrl+T`: New Tab
+- `Ctrl+W`: Close Tab
+- `Ctrl+1`-`Ctrl+5`: Switch to Tab 1-5
+- `Ctrl+Tab`: Next Tab
 
 ### Insert Mode
 
