@@ -146,6 +146,7 @@ struct Editor {
     search_results: Vec<(usize, usize)>,
     current_search_index: usize,
     scroll_offset: usize,
+    horizontal_scroll: usize,
 }
 
 impl Editor {
@@ -169,6 +170,7 @@ impl Editor {
             search_results: Vec::new(),
             current_search_index: 0,
             scroll_offset: 0,
+            horizontal_scroll: 0,
         }
     }
 
@@ -247,7 +249,9 @@ impl Editor {
 
     fn handle_normal_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
         match key.code {
-            KeyCode::Char('i') => self.mode = Mode::Insert,
+            KeyCode::Char('i') | KeyCode::Insert => {
+                self.mode = Mode::Insert;
+            }
             KeyCode::Char('a') => {
                 self.mode = Mode::Insert;
                 self.move_cursor_right();
@@ -324,7 +328,7 @@ impl Editor {
 
     fn handle_insert_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
         match key.code {
-            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Esc | KeyCode::Insert => self.mode = Mode::Normal,
             KeyCode::Enter => self.insert_newline(),
             KeyCode::Backspace => self.backspace(),
             KeyCode::Left => self.move_cursor_left(),
@@ -415,24 +419,6 @@ impl Editor {
         Ok(false)
     }
 
-    fn move_cursor_left(&mut self) {
-        if self.cursor_position.0 > 0 {
-            self.cursor_position.0 -= 1;
-        } else if self.cursor_position.1 > 0 {
-            self.cursor_position.1 -= 1;
-            self.cursor_position.0 = self.content[self.cursor_position.1].len();
-        }
-    }
-
-    fn move_cursor_right(&mut self) {
-        if self.cursor_position.0 < self.content[self.cursor_position.1].len() {
-            self.cursor_position.0 += 1;
-        } else if self.cursor_position.1 < self.content.len() - 1 {
-            self.cursor_position.1 += 1;
-            self.cursor_position.0 = 0;
-        }
-    }
-
     fn move_cursor_up(&mut self) {
         if self.cursor_position.1 > 0 {
             self.cursor_position.1 -= 1;
@@ -451,11 +437,35 @@ impl Editor {
             }
         }
     }
+
+    fn move_cursor_left(&mut self) {
+        if self.cursor_position.0 > 0 {
+            self.cursor_position.0 -= 1;
+            if self.cursor_position.0 < self.horizontal_scroll {
+                self.horizontal_scroll = self.cursor_position.0;
+            }
+        } else if self.cursor_position.1 > 0 {
+            self.cursor_position.1 -= 1;
+            self.cursor_position.0 = self.content[self.cursor_position.1].len();
+            self.adjust_horizontal_scroll();
+        }
+    }
+
+    fn move_cursor_right(&mut self) {
+        if self.cursor_position.0 < self.content[self.cursor_position.1].len() {
+            self.cursor_position.0 += 1;
+            self.adjust_horizontal_scroll();
+        } else if self.cursor_position.1 < self.content.len() - 1 {
+            self.cursor_position.1 += 1;
+            self.cursor_position.0 = 0;
+            self.horizontal_scroll = 0;
+        }
+    }
     
     fn get_editor_height(&self) -> usize {
-        // This is an approximation. In a real implementation, you'd get the actual terminal size.
         24
     }
+
     fn move_cursor_start_of_line(&mut self) {
         self.cursor_position.0 = 0;
     }
@@ -468,6 +478,7 @@ impl Editor {
         let line = &mut self.content[self.cursor_position.1];
         line.insert(self.cursor_position.0, c);
         self.cursor_position.0 += 1;
+        self.adjust_horizontal_scroll();
     }
 
     fn insert_newline(&mut self) {
@@ -747,10 +758,16 @@ impl Editor {
         let mut h = HighlightLines::new(syntax, &self.ts.themes["base16-ocean.dark"]);
     
         let editor_chunk_index = if self.show_debug { 1 } else { 0 };
-        let editor_height = chunks[editor_chunk_index].height as usize - 2; // Account for borders
+        let editor_height = chunks[editor_chunk_index].height as usize - 2;
         let content_height = self.content.len();
-    
-        // Adjust scroll_offset if necessary
+        let editor_width = self.get_editor_width();
+
+        let visible_content = self.content.iter()
+            .skip(self.scroll_offset)
+            .take(editor_height)
+            .enumerate();
+
+
         if self.cursor_position.1 < self.scroll_offset {
             self.scroll_offset = self.cursor_position.1;
         } else if self.cursor_position.1 >= self.scroll_offset + editor_height {
@@ -766,12 +783,26 @@ impl Editor {
         for (index, line) in visible_content {
             let ranges: Vec<(SyntectStyle, &str)> = h.highlight_line(line, &self.ps).unwrap();
             let mut styled_spans = Vec::new();
+            let mut line_length = 0;
             for (style, content) in ranges {
                 let color = style.foreground;
-                styled_spans.push(Span::styled(
-                    content.to_string(),
-                    Style::default().fg(Color::Rgb(color.r, color.g, color.b))
-                ));
+                let visible_content = if line_length >= self.horizontal_scroll {
+                    content
+                } else if line_length + content.len() > self.horizontal_scroll {
+                    &content[self.horizontal_scroll - line_length..]
+                } else {
+                    ""
+                };
+                line_length += content.len();
+                if !visible_content.is_empty() {
+                    styled_spans.push(Span::styled(
+                        visible_content.to_string(),
+                        Style::default().fg(Color::Rgb(color.r, color.g, color.b))
+                    ));
+                }
+                if line_length >= self.horizontal_scroll + editor_width {
+                    break;
+                }
             }
             
             if index + self.scroll_offset == self.cursor_position.1 {
@@ -779,8 +810,8 @@ impl Editor {
                 let mut current_len = 0;
                 for span in styled_spans {
                     let span_len = span.content.len();
-                    if current_len <= self.cursor_position.0 && self.cursor_position.0 < current_len + span_len {
-                        let (before, after) = span.content.split_at(self.cursor_position.0 - current_len);
+                    if current_len <= self.cursor_position.0 - self.horizontal_scroll && self.cursor_position.0 - self.horizontal_scroll < current_len + span_len {
+                        let (before, after) = span.content.split_at(self.cursor_position.0 - self.horizontal_scroll - current_len);
                         if !before.is_empty() {
                             line_spans.push(Span::styled(before.to_string(), span.style));
                         }
@@ -793,7 +824,7 @@ impl Editor {
                     }
                     current_len += span_len;
                 }
-                if self.cursor_position.0 >= current_len {
+                if self.cursor_position.0 - self.horizontal_scroll >= current_len {
                     line_spans.push(Span::styled("".to_string(), self.cursor_style));
                 }
                 text.push(Spans::from(line_spans));
@@ -822,7 +853,7 @@ impl Editor {
             f.render_widget(search_paragraph, chunks[chunks.len() - 1]);
         }
     
-        let cursor_x = self.cursor_position.0 as u16 + 2;
+        let cursor_x = (self.cursor_position.0 - self.horizontal_scroll) as u16 + 2;
         let cursor_y = (self.cursor_position.1 - self.scroll_offset) as u16 + if self.show_debug { 8 } else { 2 };
         f.set_cursor(
             cursor_x.min(chunks[editor_chunk_index].width - 1),
@@ -886,6 +917,20 @@ impl Editor {
         }
         Ok(false)
     }
+
+    fn adjust_horizontal_scroll(&mut self) {
+        let editor_width = self.get_editor_width();
+        if self.cursor_position.0 < self.horizontal_scroll {
+            self.horizontal_scroll = self.cursor_position.0;
+        } else if self.cursor_position.0 >= self.horizontal_scroll + editor_width {
+            self.horizontal_scroll = self.cursor_position.0 - editor_width + 1;
+        }
+    }
+
+    fn get_editor_width(&self) -> usize {
+        80
+    }
+
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
