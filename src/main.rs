@@ -20,6 +20,64 @@ use syntect::easy::HighlightLines;
 use syntect::highlighting::{ThemeSet, Style as SyntectStyle};
 use syntect::parsing::SyntaxSet;
 use clipboard::{ClipboardContext, ClipboardProvider};
+use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+
+#[derive(Deserialize, Serialize, Clone)]
+struct Keybindings {
+    normal_mode: HashMap<String, String>,
+    insert_mode: HashMap<String, String>,
+    visual_mode: HashMap<String, String>,
+    command_mode: HashMap<String, String>,
+    file_select_mode: HashMap<String, String>,
+    search_mode: HashMap<String, String>,
+}
+
+impl Keybindings {
+    fn default() -> Self {
+        Keybindings {
+            normal_mode: [
+                ("i".to_string(), "enter_insert_mode".to_string()),
+                ("Insert".to_string(), "enter_insert_mode".to_string()),
+                ("a".to_string(), "append".to_string()),
+                ("o".to_string(), "open_line_below".to_string()),
+                ("O".to_string(), "open_line_above".to_string()),
+                ("dd".to_string(), "delete_line".to_string()),
+                ("yy".to_string(), "yank_line".to_string()),
+                ("p".to_string(), "paste_after".to_string()),
+                ("v".to_string(), "enter_visual_mode".to_string()),
+                (":".to_string(), "enter_command_mode".to_string()),
+                ("Ctrl+b".to_string(), "toggle_debug_menu".to_string()),
+                ("Ctrl+e".to_string(), "enter_directory_nav_mode".to_string()),
+                ("/".to_string(), "enter_search_mode".to_string()),
+                ("n".to_string(), "next_search_result".to_string()),
+                ("N".to_string(), "previous_search_result".to_string()),
+                ("Ctrl+y".to_string(), "copy_selection".to_string()),
+                ("Ctrl+p".to_string(), "paste_clipboard".to_string()),
+            ].iter().cloned().collect(),
+            insert_mode: [
+                ("Esc".to_string(), "exit_insert_mode".to_string()),
+            ].iter().cloned().collect(),
+            visual_mode: [
+                ("Esc".to_string(), "exit_visual_mode".to_string()),
+                ("y".to_string(), "yank_selection".to_string()),
+                ("d".to_string(), "delete_selection".to_string()),
+            ].iter().cloned().collect(),
+            command_mode: [
+                ("Enter".to_string(), "execute_command".to_string()),
+                ("Esc".to_string(), "exit_command_mode".to_string()),
+            ].iter().cloned().collect(),
+            file_select_mode: [
+                ("Enter".to_string(), "select_file".to_string()),
+                ("Esc".to_string(), "exit_file_select_mode".to_string()),
+            ].iter().cloned().collect(),
+            search_mode: [
+                ("Enter".to_string(), "execute_search".to_string()),
+                ("Esc".to_string(), "exit_search_mode".to_string()),
+            ].iter().cloned().collect(),
+        }
+    }
+}
 
 #[derive(PartialEq)]
 enum Mode {
@@ -147,10 +205,12 @@ struct Editor {
     current_search_index: usize,
     scroll_offset: usize,
     horizontal_scroll: usize,
+    keybindings: Keybindings,
 }
 
 impl Editor {
     fn new() -> Self {
+        let keybindings = Self::load_config().unwrap_or_else(|_| Keybindings::default());
         Editor {
             content: vec![String::new()],
             cursor_position: (0, 0),
@@ -171,7 +231,67 @@ impl Editor {
             current_search_index: 0,
             scroll_offset: 0,
             horizontal_scroll: 0,
+            keybindings,
         }
+    }
+
+    fn load_config() -> Result<Keybindings, Box<dyn Error>> {
+        let config_dir = dirs::home_dir()
+            .ok_or("Could not find home directory")?
+            .join(".config")
+            .join("phantom");
+        let config_path = config_dir.join("config.toml");
+    
+        if !config_path.exists() {
+            Self::create_default_config(&config_path)?;
+        }
+    
+        let config_str = fs::read_to_string(&config_path)?;
+        let config: Keybindings = toml::from_str(&config_str)?;
+        Ok(config)
+    }
+        
+    fn key_event_to_string(key: event::KeyEvent) -> String {
+        let mut key_str = String::new();
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            key_str.push_str("Ctrl+");
+        }
+        if key.modifiers.contains(KeyModifiers::ALT) {
+            key_str.push_str("Alt+");
+        }
+        if key.modifiers.contains(KeyModifiers::SHIFT) {
+            key_str.push_str("Shift+");
+        }
+        match key.code {
+            KeyCode::Char(c) => key_str.push(c),
+            KeyCode::Enter => key_str.push_str("Enter"),
+            KeyCode::Left => key_str.push_str("Left"),
+            KeyCode::Right => key_str.push_str("Right"),
+            KeyCode::Up => key_str.push_str("Up"),
+            KeyCode::Down => key_str.push_str("Down"),
+            KeyCode::Home => key_str.push_str("Home"),
+            KeyCode::End => key_str.push_str("End"),
+            KeyCode::PageUp => key_str.push_str("PageUp"),
+            KeyCode::PageDown => key_str.push_str("PageDown"),
+            KeyCode::Tab => key_str.push_str("Tab"),
+            KeyCode::BackTab => key_str.push_str("BackTab"),
+            KeyCode::Delete => key_str.push_str("Delete"),
+            KeyCode::Insert => key_str.push_str("Insert"),
+            KeyCode::F(n) => key_str.push_str(&format!("F{}", n)),
+            KeyCode::Esc => key_str.push_str("Esc"),
+            _ => {},
+        }
+        key_str
+    }
+
+    fn create_default_config(config_path: &PathBuf) -> Result<(), Box<dyn Error>> {
+        if let Some(parent) = config_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+    
+        let default_config = toml::to_string_pretty(&Keybindings::default())?;
+        fs::write(config_path, default_config)?;
+        Ok(())
     }
 
     fn with_file(path: &Path) -> Result<Self, io::Error> {
@@ -248,80 +368,55 @@ impl Editor {
     }
 
     fn handle_normal_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
-        match key.code {
-            KeyCode::Char('i') | KeyCode::Insert => {
-                self.mode = Mode::Insert;
+        let key_str = Self::key_event_to_string(key);
+        if let Some(action) = self.keybindings.normal_mode.get(&key_str) {
+            match action.as_str() {
+                "enter_insert_mode" => self.mode = Mode::Insert,
+                "append" => {
+                    self.mode = Mode::Insert;
+                    self.move_cursor_right();
+                },
+                "open_line_below" => {
+                    self.insert_line_below();
+                    self.mode = Mode::Insert;
+                },
+                "open_line_above" => {
+                    self.insert_line_above();
+                    self.mode = Mode::Insert;
+                },
+                "delete_line" => self.delete_line(),
+                "yank_line" => self.yank_line(),
+                "paste_after" => self.paste_after(),
+                "enter_visual_mode" => {
+                    self.mode = Mode::Visual;
+                    self.visual_start = self.cursor_position;
+                },
+                "enter_command_mode" => {
+                    self.mode = Mode::Command;
+                    self.command_buffer.clear();
+                },
+                "toggle_debug_menu" => self.toggle_debug_menu(),
+                "enter_directory_nav_mode" => self.enter_directory_nav_mode()?,
+                "enter_search_mode" => self.enter_search_mode(),
+                "next_search_result" => self.next_search_result(),
+                "previous_search_result" => self.previous_search_result(),
+                "copy_selection" => self.copy_selection(),
+                "paste_clipboard" => self.paste_clipboard(),
+                _ => {},
             }
-            KeyCode::Char('a') => {
-                self.mode = Mode::Insert;
-                self.move_cursor_right();
+        } else {
+            // Handle default movements
+            match key.code {
+                KeyCode::Left => self.move_cursor_left(),
+                KeyCode::Down => self.move_cursor_down(),
+                KeyCode::Up => self.move_cursor_up(),
+                KeyCode::Right => self.move_cursor_right(),
+                KeyCode::Home => self.move_cursor_start_of_line(),
+                KeyCode::End => self.move_cursor_end_of_line(),
+                KeyCode::PageUp => self.page_up(),
+                KeyCode::PageDown => self.page_down(),
+                _ => {},
             }
-            KeyCode::Char('o') => {
-                self.insert_line_below();
-                self.mode = Mode::Insert;
-            }
-            KeyCode::Char('O') => {
-                self.insert_line_above();
-                self.mode = Mode::Insert;
-            }
-            KeyCode::Char('d') => {
-                if let Event::Key(next_key) = event::read()? {
-                    if next_key.code == KeyCode::Char('d') {
-                        self.delete_line();
-                    }
-                }
-            }
-            KeyCode::Char('y') => {
-                if key.modifiers.contains(KeyModifiers::CONTROL) {
-                    self.copy_selection();
-                } else {
-                    if let Event::Key(next_key) = event::read()? {
-                        if next_key.code == KeyCode::Char('y') {
-                            self.yank_line();
-                        }
-                    }
-                }
-            }
-            KeyCode::Char('p') => {
-                if key.modifiers.contains(KeyModifiers::CONTROL) {
-                    self.paste_clipboard();
-                } else {
-                    self.paste_after();
-                }
-            }
-            KeyCode::Char('v') => {
-                self.mode = Mode::Visual;
-                self.visual_start = self.cursor_position;
-            }
-            KeyCode::Left => self.move_cursor_left(),
-            KeyCode::Down => self.move_cursor_down(),
-            KeyCode::Up => self.move_cursor_up(),
-            KeyCode::Right => self.move_cursor_right(),
-            KeyCode::Home => self.move_cursor_start_of_line(),
-            KeyCode::End => self.move_cursor_end_of_line(),
-            KeyCode::Delete => self.delete_char(),
-            KeyCode::Char(':') => {
-                self.mode = Mode::Command;
-                self.command_buffer.clear();
-            }
-            KeyCode::Char('b') if key.modifiers == KeyModifiers::CONTROL => {
-                self.toggle_debug_menu();
-            }
-            KeyCode::Char('e') if key.modifiers == KeyModifiers::CONTROL => {
-                self.enter_directory_nav_mode()?;
-            }
-            KeyCode::Char('/') => {
-                self.enter_search_mode();
-            }
-            KeyCode::Char('n') => {
-                self.next_search_result();
-            }
-            KeyCode::Char('N') => {
-                self.previous_search_result();
-            }
-            KeyCode::PageUp => self.page_up(),
-            KeyCode::PageDown => self.page_down(),
-            _ => {}
         }
         Ok(false)
     }
@@ -930,7 +1025,6 @@ impl Editor {
     fn get_editor_width(&self) -> usize {
         80
     }
-
 }
 
 fn main() -> Result<(), Box<dyn Error>> {

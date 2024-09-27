@@ -10,7 +10,7 @@ PhantomEditor is a lightweight, terminal-based text editor written in Rust. It c
 - Vim-like modal editing (Normal, Insert, Visual, and Command modes)
 - Syntax highlighting
 - System clipboard integration
-- Customizable (extendable through Rust)
+- Customizable (Keybindings changeable through config file ~/.config/phantom/config.toml)
 - Directory Navigation
 - Debug Output Menu
 - Search in file
@@ -48,7 +48,11 @@ To start PhantomEditor:
 If a filename is provided, PhantomEditor will attempt to open that file. Otherwise, it will start with a blank document.
 If a directory is provided, PhantomEditor will enter directory navigation mode
 
-## Keybinds and Commands
+## Default Keybinds and Commands
+
+### ~/.config/phantom/config.toml
+
+You can change the keybinds in the config file
 
 ### Global
 
@@ -56,7 +60,7 @@ If a directory is provided, PhantomEditor will enter directory navigation mode
 
 ### Normal Mode
 
-- `i`: Enter Insert mode
+- `i` or `Insert` : Enter Insert mode
 - `a`: Enter Insert mode after the cursor
 - `o`: Insert a new line below and enter Insert mode
 - `O`: Insert a new line above and enter Insert mode
