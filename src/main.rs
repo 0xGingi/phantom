@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::env;
 use tui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Span, Spans},
     widgets::{Block, Borders, Paragraph, List, ListItem, ListState},
@@ -23,8 +23,6 @@ use clipboard::{ClipboardContext, ClipboardProvider};
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use serde_json::Value;
-use std::fs::File;
 
 #[derive(Deserialize, Serialize, Clone)]
 struct ColorConfig {
@@ -83,6 +81,7 @@ impl Keybindings {
     fn default() -> Self {
         Keybindings {
             normal_mode: [
+                ("dd".to_string(), "delete_line".to_string()),
                 ("i".to_string(), "enter_insert_mode".to_string()),
                 ("Insert".to_string(), "enter_insert_mode".to_string()),
                 ("a".to_string(), "append".to_string()),
@@ -94,7 +93,7 @@ impl Keybindings {
                 ("v".to_string(), "enter_visual_mode".to_string()),
                 (":".to_string(), "enter_command_mode".to_string()),
                 ("Ctrl+b".to_string(), "toggle_debug_menu".to_string()),
-                ("Ctrl+e".to_string(), "enter_directory_nav_mode".to_string()),
+                ("Ctrl+e".to_string(), "toggle_sidebar".to_string()),
                 ("/".to_string(), "enter_search_mode".to_string()),
                 ("n".to_string(), "next_search_result".to_string()),
                 ("N".to_string(), "previous_search_result".to_string()),
@@ -136,6 +135,7 @@ enum Mode {
     FileSelect,
     DirectoryNav,
     Search,
+    SidebarActive,
 }
 
 struct FileSelector {
@@ -193,13 +193,7 @@ impl FileSelector {
         }
     }
 
-    fn render<B: tui::backend::Backend>(&self, f: &mut Frame<B>) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .margin(1)
-            .constraints([Constraint::Percentage(100)].as_ref())
-            .split(f.size());
-
+    fn render<B: tui::backend::Backend>(&self, f: &mut Frame<B>, area: Rect) {
         let items: Vec<ListItem> = self.entries
             .iter()
             .enumerate()
@@ -229,7 +223,7 @@ impl FileSelector {
 
         let mut state = ListState::default();
         state.select(Some(self.selected_index));
-        f.render_stateful_widget(list, chunks[0], &mut state);
+        f.render_stateful_widget(list, area, &mut state);
     }
 }
 
@@ -257,6 +251,9 @@ struct Editor {
     undo_stack: VecDeque<EditOperation>,
     redo_stack: VecDeque<EditOperation>,
     color_config: ColorConfig,
+    show_sidebar: bool,
+    sidebar_width: u16,
+    pending_key: Option<String>,
 }
 
 impl Editor {
@@ -287,6 +284,9 @@ impl Editor {
             undo_stack: VecDeque::new(),
             redo_stack: VecDeque::new(),
             color_config,
+            show_sidebar: false,
+            sidebar_width: 30,
+            pending_key: None,
         }
     }
 
@@ -496,65 +496,128 @@ impl Editor {
             Mode::Visual => self.handle_visual_mode(key),
             Mode::FileSelect | Mode::DirectoryNav => self.handle_file_select_mode(key),
             Mode::Search => self.handle_search_mode(key),
+            Mode::SidebarActive => self.handle_sidebar_active_mode(key),
         }
     }
 
-    fn handle_normal_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
-        let key_str = Self::key_event_to_string(key);
-        if let Some(action) = self.keybindings.normal_mode.get(&key_str) {
-            match action.as_str() {
-                "enter_insert_mode" => self.mode = Mode::Insert,
-                "append" => {
-                    self.mode = Mode::Insert;
-                    self.move_cursor_right();
-                },
-                "open_line_below" => {
-                    self.insert_line_below();
-                    self.mode = Mode::Insert;
-                },
-                "open_line_above" => {
-                    self.insert_line_above();
-                    self.mode = Mode::Insert;
-                },
-                "delete_line" => self.delete_line(),
-                "yank_line" => self.yank_line(),
-                "paste_after" => self.paste_after(),
-                "enter_visual_mode" => {
-                    self.mode = Mode::Visual;
-                    self.visual_start = self.cursor_position;
-                },
-                "enter_command_mode" => {
-                    self.mode = Mode::Command;
-                    self.command_buffer.clear();
-                },
-                "toggle_debug_menu" => self.toggle_debug_menu(),
-                "enter_directory_nav_mode" => self.enter_directory_nav_mode()?,
-                "enter_search_mode" => self.enter_search_mode(),
-                "next_search_result" => self.next_search_result(),
-                "previous_search_result" => self.previous_search_result(),
-                "copy_selection" => self.copy_selection(),
-                "paste_clipboard" => self.paste_clipboard(),
-                "undo" => self.undo(),
-                "redo" => self.redo(),
-                _ => {},
-            }
+    fn toggle_sidebar(&mut self) -> io::Result<bool> {
+        self.show_sidebar = !self.show_sidebar;
+        if self.show_sidebar {
+            let current_dir = if let Some(ref file) = self.current_file {
+                Path::new(file).parent().unwrap_or(Path::new(".")).to_path_buf()
+            } else {
+                env::current_dir()?
+            };
+            self.file_selector = Some(FileSelector::new(&current_dir)?);
+            self.mode = Mode::SidebarActive;
         } else {
-            // Handle default movements
-            match key.code {
-                KeyCode::Left => self.move_cursor_left(),
-                KeyCode::Down => self.move_cursor_down(),
-                KeyCode::Up => self.move_cursor_up(),
-                KeyCode::Right => self.move_cursor_right(),
-                KeyCode::Home => self.move_cursor_start_of_line(),
-                KeyCode::End => self.move_cursor_end_of_line(),
-                KeyCode::PageUp => self.page_up(),
-                KeyCode::PageDown => self.page_down(),
-                _ => {},
-            }
+            self.mode = Mode::Normal;
         }
         Ok(false)
     }
 
+    fn handle_normal_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
+        let key_str = Self::key_event_to_string(key);
+        
+        if let Some(pending) = self.pending_key.take() {
+            let combined_key = format!("{}{}", pending, key_str);
+            if let Some(action) = self.keybindings.normal_mode.get(&combined_key).cloned() {
+                return self.execute_action(&action);
+            }
+        }
+    
+        if let Some(action) = self.keybindings.normal_mode.get(&key_str).cloned() {
+            self.execute_action(&action)
+        } else {
+            // If it's a potential first key of a multi-key binding, store it
+            if self.keybindings.normal_mode.keys().any(|k| k.starts_with(&key_str)) {
+                self.pending_key = Some(key_str);
+            } else {
+                // Handle default movements
+                match key.code {
+                    KeyCode::Left => self.move_cursor_left(),
+                    KeyCode::Down => self.move_cursor_down(),
+                    KeyCode::Up => self.move_cursor_up(),
+                    KeyCode::Right => self.move_cursor_right(),
+                    KeyCode::Home => self.move_cursor_start_of_line(),
+                    KeyCode::End => self.move_cursor_end_of_line(),
+                    KeyCode::PageUp => self.page_up(),
+                    KeyCode::PageDown => self.page_down(),
+                    _ => {},
+                }
+            }
+            Ok(false)
+        }
+    }
+    
+    fn execute_action(&mut self, action: &str) -> io::Result<bool> {
+        match action {
+            "enter_insert_mode" => self.mode = Mode::Insert,
+            "append" => {
+                self.mode = Mode::Insert;
+                self.move_cursor_right();
+            },
+            "open_line_below" => {
+                self.insert_line_below();
+                self.mode = Mode::Insert;
+            },
+            "open_line_above" => {
+                self.insert_line_above();
+                self.mode = Mode::Insert;
+            },
+            "delete_line" => self.delete_line(),
+            "yank_line" => self.yank_line(),
+            "paste_after" => self.paste_after(),
+            "enter_visual_mode" => {
+                self.mode = Mode::Visual;
+                self.visual_start = self.cursor_position;
+            },
+            "enter_command_mode" => {
+                self.mode = Mode::Command;
+                self.command_buffer.clear();
+            },
+            "toggle_debug_menu" => self.toggle_debug_menu(),
+            "enter_directory_nav_mode" => self.enter_directory_nav_mode()?,
+            "enter_search_mode" => self.enter_search_mode(),
+            "next_search_result" => self.next_search_result(),
+            "previous_search_result" => self.previous_search_result(),
+            "copy_selection" => self.copy_selection(),
+            "paste_clipboard" => self.paste_clipboard(),
+            "undo" => self.undo(),
+            "redo" => self.redo(),
+            "toggle_sidebar" => return self.toggle_sidebar(),
+            _ => {},
+        }
+        Ok(false)
+    }
+
+    fn handle_sidebar_active_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
+        let key_str = Self::key_event_to_string(key);
+        
+        if let Some(action) = self.keybindings.normal_mode.get(&key_str) {
+            if action == "toggle_sidebar" {
+                return self.toggle_sidebar();
+            }
+        }
+    
+        if let Some(file_selector) = &mut self.file_selector {
+            match key.code {
+                KeyCode::Up => file_selector.up(),
+                KeyCode::Down => file_selector.down(),
+                KeyCode::Enter => {
+                    if let Some(path) = file_selector.enter()? {
+                        self.open_file(&path)?;
+                        self.toggle_sidebar()?;
+                    }
+                }
+                KeyCode::Esc => {
+                    self.toggle_sidebar()?;
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
     fn handle_insert_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
         match key.code {
             KeyCode::Esc | KeyCode::Insert => self.mode = Mode::Normal,
@@ -769,16 +832,17 @@ impl Editor {
     }
 
     fn delete_line(&mut self) {
-        self.save_state();
-        if self.content.len() > 1 {
-            self.content.remove(self.cursor_position.1);
-        } else {
-            self.content[0].clear();
+        if self.cursor_position.1 < self.content.len() {
+            let line = self.content.remove(self.cursor_position.1);
+            self.clipboard_context.set_contents(line).unwrap();
+            if self.content.is_empty() {
+                self.content.push(String::new());
+            }
+            if self.cursor_position.1 == self.content.len() {
+                self.move_cursor_up();
+            }
+            self.cursor_position.0 = 0;
         }
-        if self.cursor_position.1 >= self.content.len() {
-            self.cursor_position.1 = self.content.len() - 1;
-        }
-        self.cursor_position.0 = 0;
     }
 
     fn insert_line_below(&mut self) {
@@ -798,31 +862,33 @@ impl Editor {
         self.clipboard_context.set_contents(line.to_string()).unwrap();
     }
 
-    fn paste_after(&mut self) {
-        self.save_state();
-        if let Ok(contents) = self.clipboard_context.get_contents() {
-            let lines: Vec<&str> = contents.split('\n').collect();
-            if lines.len() == 1 {
-                let line = &mut self.content[self.cursor_position.1];
-                line.insert_str(self.cursor_position.0, &contents);
-                self.cursor_position.0 += contents.len();
-            } else {
-                for (i, &line) in lines.iter().enumerate() {
-                    if i == 0 {
-                        let current_line = &mut self.content[self.cursor_position.1];
-                        let rest_of_line = current_line.split_off(self.cursor_position.0);
-                        current_line.push_str(line);
-                        self.content.insert(self.cursor_position.1 + 1, rest_of_line);
-                    } else if i == lines.len() - 1 {
-                        self.content[self.cursor_position.1 + i].insert_str(0, line);
-                    } else {
-                        self.content.insert(self.cursor_position.1 + i, line.to_string());
-                    }
+fn paste_after(&mut self) {
+    if let Ok(contents) = self.clipboard_context.get_contents() {
+        let lines: Vec<&str> = contents.split('\n').collect();
+        if lines.len() == 1 {
+            let line = &mut self.content[self.cursor_position.1];
+            line.insert_str(self.cursor_position.0 + 1, &contents);
+            self.cursor_position.0 += contents.len();
+        } else {
+            for (i, &line) in lines.iter().enumerate() {
+                if i == 0 {
+                    let current_line = &mut self.content[self.cursor_position.1];
+                    let rest_of_line = current_line.split_off(self.cursor_position.0 + 1);
+                    current_line.push_str(line);
+                    self.content.insert(self.cursor_position.1 + 1, rest_of_line);
+                } else if i == lines.len() - 1 {
+                    self.content[self.cursor_position.1 + i].insert_str(0, line);
+                } else {
+                    self.content.insert(self.cursor_position.1 + i, line.to_string());
                 }
-                self.cursor_position = (lines.last().unwrap().len(), self.cursor_position.1 + lines.len() - 1);
             }
+            self.cursor_position = (lines.last().unwrap().len(), self.cursor_position.1 + lines.len() - 1);
         }
+        self.debug_messages.push("Pasted content from clipboard".to_string());
+    } else {
+        self.debug_messages.push("Failed to paste: clipboard is empty or inaccessible".to_string());
     }
+}
 
     fn copy_selection(&mut self) {
         let (start, end) = if self.visual_start <= self.cursor_position {
@@ -948,14 +1014,29 @@ impl Editor {
     }
 
     fn ui<B: tui::backend::Backend>(&mut self, f: &mut Frame<B>) {
-        if self.mode == Mode::FileSelect || self.mode == Mode::DirectoryNav {
+        let main_layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(
+                if self.show_sidebar {
+                    vec![
+                        Constraint::Length(self.sidebar_width),
+                        Constraint::Min(1),
+                    ]
+                } else {
+                    vec![Constraint::Min(1)]
+                }
+            )
+            .split(f.size());
+    
+        let editor_area = if self.show_sidebar { main_layout[1] } else { main_layout[0] };
+    
+        if self.show_sidebar {
             if let Some(file_selector) = &self.file_selector {
-                file_selector.render(f);
+                file_selector.render(f, main_layout[0]);
             }
-            return;
         }
     
-        let chunks = Layout::default()
+        let editor_layout = Layout::default()
             .direction(Direction::Vertical)
             .margin(1)
             .constraints(
@@ -972,9 +1053,9 @@ impl Editor {
                     ]
                 }
             )
-            .split(f.size());
-    
-        let mode_indicator = match self.mode {
+            .split(editor_area);
+            
+            let mode_indicator = match self.mode {
             Mode::Normal => "NORMAL",
             Mode::Insert => "INSERT",
             Mode::Command => "COMMAND",
@@ -982,6 +1063,7 @@ impl Editor {
             Mode::FileSelect => "FILE SELECT",
             Mode::DirectoryNav => "DIRECTORY NAV",
             Mode::Search => "SEARCH",
+            Mode::SidebarActive => "SIDEBAR",
         };
     
         let block = Block::default()
@@ -992,23 +1074,23 @@ impl Editor {
                 .fg(Self::parse_color(&self.color_config.foreground))
                 .add_modifier(Modifier::BOLD),
         ));
-    
+        
         let syntax = self.ps.find_syntax_by_extension("rs")
             .or_else(|| self.ps.find_syntax_by_name(&self.syntax))
             .unwrap_or_else(|| self.ps.find_syntax_plain_text());
 
         let theme = &self.ts.themes["base16-ocean.dark"];
-        let background_color = Self::parse_color(&self.color_config.background);
-let foreground_color = Self::parse_color(&self.color_config.foreground);
+        let _background_color = Self::parse_color(&self.color_config.background);
+        let _foreground_color = Self::parse_color(&self.color_config.foreground);
 
         let mut h = HighlightLines::new(syntax, theme);
     
         let editor_chunk_index = if self.show_debug { 1 } else { 0 };
-        let editor_height = chunks[editor_chunk_index].height as usize - 2;
-        let content_height = self.content.len();
+        let editor_height = editor_layout[editor_chunk_index].height as usize - 2;
+        let _content_height = self.content.len();
         let editor_width = self.get_editor_width();
 
-        let visible_content = self.content.iter()
+        let _visible_content = self.content.iter()
             .skip(self.scroll_offset)
             .take(editor_height)
             .enumerate();
@@ -1081,32 +1163,32 @@ let foreground_color = Self::parse_color(&self.color_config.foreground);
         let paragraph = Paragraph::new(text)
         .block(block)
         .style(Style::default().bg(Self::parse_color(&self.color_config.background)));
-    f.render_widget(paragraph, chunks[editor_chunk_index]);
-    
-        if self.show_debug {
-            let debug_messages: Vec<Spans> = self.debug_messages.iter().map(|m| Spans::from(m.clone())).collect();
-            let debug_paragraph = Paragraph::new(debug_messages)
-                .block(Block::default().borders(Borders::ALL).title("Debug Output"));
-            f.render_widget(debug_paragraph, chunks[0]);
-        }
-    
-        if self.mode == Mode::Command {
-            let command_text = Spans::from(format!(":{}", self.command_buffer));
-            let command_paragraph = Paragraph::new(vec![command_text]);
-            f.render_widget(command_paragraph, chunks[chunks.len() - 1]);
-        } else if self.mode == Mode::Search {
-            let search_text = Spans::from(format!("Search: {}", self.search_query));
-            let search_paragraph = Paragraph::new(vec![search_text]);
-            f.render_widget(search_paragraph, chunks[chunks.len() - 1]);
-        }
-    
-        let cursor_x = (self.cursor_position.0 - self.horizontal_scroll) as u16 + 2;
+    f.render_widget(paragraph, editor_layout[editor_chunk_index]);
+
+    if self.show_debug {
+        let debug_messages: Vec<Spans> = self.debug_messages.iter().map(|m| Spans::from(m.clone())).collect();
+        let debug_paragraph = Paragraph::new(debug_messages)
+            .block(Block::default().borders(Borders::ALL).title("Debug Output"));
+        f.render_widget(debug_paragraph, editor_layout[0]);
+    }
+
+    if self.mode == Mode::Command {
+        let command_text = Spans::from(format!(":{}", self.command_buffer));
+        let command_paragraph = Paragraph::new(vec![command_text]);
+        f.render_widget(command_paragraph, editor_layout[editor_layout.len() - 1]);
+    } else if self.mode == Mode::Search {
+        let search_text = Spans::from(format!("Search: {}", self.search_query));
+        let search_paragraph = Paragraph::new(vec![search_text]);
+        f.render_widget(search_paragraph, editor_layout[editor_layout.len() - 1]);
+    }
+
+        let cursor_x = (self.cursor_position.0 - self.horizontal_scroll) as u16 + 1 + if self.show_sidebar { self.sidebar_width } else { 0 };
         let cursor_y = (self.cursor_position.1 - self.scroll_offset) as u16 + if self.show_debug { 8 } else { 2 };
         f.set_cursor(
-            cursor_x.min(chunks[editor_chunk_index].width - 1),
-            cursor_y.min(chunks[editor_chunk_index].height - 1),
+            cursor_x.min(editor_area.width - 1),
+            cursor_y.min(editor_area.height - 1),
         )
-    }
+        }
 
     fn enter_search_mode(&mut self) {
         self.mode = Mode::Search;
