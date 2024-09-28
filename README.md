@@ -91,7 +91,7 @@ You can change the keybinds in the config file and the colors in the colors file
 - `Ctrl+T`: New Tab
 - `Ctrl+W`: Close Tab
 - `Ctrl+1`-`Ctrl+5`: Switch to Tab 1-5 (Not working atm)
-- `Ctrl+Tab`: Next Tab
+- `Tab`: Swap Between Tabs
 - `Ctrl+M`: Toggle Minimap
 
 ### Insert Mode
