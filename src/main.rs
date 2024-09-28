@@ -180,7 +180,7 @@ impl Keybindings {
                 ("Ctrl+t".to_string(), "new_tab".to_string()),
                 ("Ctrl+w".to_string(), "close_tab".to_string()),
                 ("Ctrl+Shift+Tab".to_string(), "previous_tab".to_string()),
-
+                ("Ctrl+m".to_string(), "toggle_minimap".to_string()),
             ].iter().cloned().collect(),
             insert_mode: [
                 ("Esc".to_string(), "exit_insert_mode".to_string()),
@@ -340,6 +340,8 @@ struct Editor {
     active_tab: usize,
     mouse_selection_start: Option<(usize, usize)>,
     mouse_selection_end: Option<(usize, usize)>,
+    show_minimap: bool,
+    minimap_width: u16,
 }
 
 impl Editor {
@@ -377,9 +379,68 @@ impl Editor {
             active_tab: 0,
             mouse_selection_start: None,
             mouse_selection_end: None,
+            show_minimap: false,
+            minimap_width: 30,
         }
     }
 
+    fn toggle_minimap(&mut self) {
+        self.show_minimap = !self.show_minimap;
+        self.debug_messages.push(if self.show_minimap {
+            "Minimap shown".to_string()
+        } else {
+            "Minimap hidden".to_string()
+        });
+    }
+
+    fn render_minimap<B: tui::backend::Backend>(&self, f: &mut Frame<B>, area: Rect) {
+        let tab = &self.tabs[self.active_tab];
+        let content = &tab.content;
+        let total_lines = content.len();
+        
+        let minimap_height = area.height as usize - 2;
+        if minimap_height == 0 {
+            return;
+        }
+        
+        let scale = if total_lines > minimap_height {
+            total_lines as f32 / minimap_height as f32
+        } else {
+            1.0
+        };
+        
+        let minimap_width = area.width as usize - 2;
+        let chars_per_dot = 3;
+        let max_line_length = content.iter().map(|line| line.len()).max().unwrap_or(1);
+        
+        let mut minimap_content = Vec::new();
+        
+        for i in 0..minimap_height {
+            let start_line = (i as f32 * scale).floor() as usize;
+            let end_line = ((i as f32 + 1.0) * scale).floor() as usize;
+            let chunk = if end_line > start_line {
+                &content[start_line..end_line.min(total_lines)]
+            } else {
+                &content[start_line..start_line + 1]
+            };
+            
+            let chunk_length: usize = chunk.iter().map(|line| line.len()).sum();
+            let avg_length = chunk_length / chunk.len().max(1);
+            let dot_count = (avg_length as f32 / chars_per_dot as f32).ceil() as usize;
+            let dots = ".".repeat(dot_count.min(minimap_width));
+            let padding = " ".repeat(minimap_width.saturating_sub(dot_count));
+            
+            let line = format!("{}{}", dots, padding);
+            minimap_content.push(Spans::from(line));
+        }
+        
+        let minimap = Paragraph::new(minimap_content)
+            .block(Block::default().borders(Borders::ALL).title("Minimap"))
+            .style(Style::default().bg(Color::Black).fg(Color::White));
+        
+        f.render_widget(minimap, area);
+    }
+        
     fn switch_to_tab(&mut self, tab_index: usize) {
         if tab_index < self.tabs.len() {
             self.active_tab = tab_index;
@@ -901,6 +962,7 @@ impl Editor {
                 self.close_tab();
                 self.update_current_tab_info();
             },
+            "toggle_minimap" => self.toggle_minimap(),
             _ => {},
         }
         Ok(false)
@@ -1373,23 +1435,40 @@ impl Editor {
             .direction(Direction::Horizontal)
             .constraints(
                 if self.show_sidebar {
+                    if self.show_minimap {
+                        vec![
+                            Constraint::Length(self.sidebar_width),
+                            Constraint::Min(1),
+                            Constraint::Length(self.minimap_width),
+                        ]
+                    } else {
+                        vec![
+                            Constraint::Length(self.sidebar_width),
+                            Constraint::Min(1),
+                        ]
+                    }
+                } else if self.show_minimap {
                     vec![
-                        Constraint::Length(self.sidebar_width),
                         Constraint::Min(1),
+                        Constraint::Length(self.minimap_width),
                     ]
                 } else {
                     vec![Constraint::Min(1)]
                 }
             )
             .split(f.size());
-    
-        let editor_area = if self.show_sidebar { main_layout[1] } else { main_layout[0] };
-    
-        if self.show_sidebar {
-            if let Some(file_selector) = &self.file_selector {
-                file_selector.render(f, main_layout[0]);
+
+        let editor_area = if self.show_sidebar {
+            if self.show_minimap {
+                main_layout[1]
+            } else {
+                main_layout[1]
             }
-        }
+        } else if self.show_minimap {
+            main_layout[0]
+        } else {
+            main_layout[0]
+        };
     
         let tab_bar_height = 3;
         let debug_height = if self.show_debug { 6 } else { 0 };
@@ -1552,6 +1631,15 @@ impl Editor {
                         }).collect();
                     }
                 }
+            }
+
+            if self.show_minimap {
+                let minimap_area = if self.show_sidebar {
+                    main_layout[2]
+                } else {
+                    main_layout[1]
+                };
+                self.render_minimap(f, minimap_area);
             }
                                             
                 if index + scroll_offset == cursor_position.1 {
