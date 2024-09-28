@@ -477,8 +477,7 @@ impl Editor {
         let tab = &self.tabs[self.active_tab];
         let content = &tab.content;
     
-        // Early exit if content is empty
-        if content.iter().all(|line| line.is_empty()) {
+        if content.is_empty() {
             let empty_minimap = Paragraph::new("No content")
                 .block(Block::default().borders(Borders::ALL).title("Minimap"))
                 .style(Style::default().bg(Color::Black).fg(Color::White));
@@ -487,75 +486,63 @@ impl Editor {
         }
     
         let total_lines = content.len();
+        let minimap_height = (area.height as usize).saturating_sub(2) * 4;
+        let minimap_width = (area.width as usize).saturating_sub(2) * 2;
     
-        // **FIXED LINES 491 & 503**
-        let minimap_height = (area.height as usize).saturating_sub(2); // Account for borders
-        if minimap_height == 0 {
-            self.debug_messages.push("Minimap area too small to render.".to_string());
-            return;
-        }
+        let scale_y = (total_lines as f32 / minimap_height as f32).ceil() as usize;
+        let scale_x = 4;
     
-        let scale = if total_lines > minimap_height {
-            total_lines as f32 / minimap_height as f32
-        } else {
-            1.0
-        };
-    
-        let minimap_width = (area.width as usize).saturating_sub(2); // Account for borders
-        let chars_per_dot = 3;
+        let background_color = Self::parse_color(&self.color_config.background);
+        let foreground_color = Self::parse_color(&self.color_config.foreground);
+        let comment_color = Self::parse_color(&self.color_config.comment);
+        let keyword_color = Self::parse_color(&self.color_config.keyword);
+        let string_color = Self::parse_color(&self.color_config.string);
+        let function_color = Self::parse_color(&self.color_config.function);
     
         let mut minimap_content = Vec::new();
     
-        for i in 0..minimap_height {
-            let start_line = (i as f32 * scale).floor() as usize;
-            let end_line = ((i as f32 + 1.0) * scale).floor() as usize;
+        for y in (0..minimap_height).step_by(4) {
+            let mut line_spans = Vec::new();
+            for x in (0..minimap_width).step_by(2) {
+                let mut braille_char = 0x2800;
+                let mut dot_count = 0;
     
-            // Ensure start_line is within bounds
-            let start_line = if start_line >= total_lines {
-                self.debug_messages.push(format!(
-                    "Minimap: start_line ({}) >= total_lines ({}). Skipping.",
-                    start_line, total_lines
+                for dy in 0..4 {
+                    for dx in 0..2 {
+                        let content_y = (y + dy) * scale_y;
+                        let content_x = (x + dx) * scale_x;
+    
+                        if content_y < total_lines && content_x < content[content_y].len() {
+                            braille_char |= 1 << (dy + 4 * dx);
+                            dot_count += 1;
+                        }
+                    }
+                }
+    
+                let color = match dot_count {
+                    0 => background_color,
+                    1..=2 => comment_color,
+                    3..=4 => string_color,
+                    5..=6 => keyword_color,
+                    7..=8 => function_color,
+                    _ => foreground_color,
+                };
+    
+                line_spans.push(Span::styled(
+                    char::from_u32(braille_char).unwrap().to_string(),
+                    Style::default().fg(color)
                 ));
-                total_lines // This will result in an empty slice
-            } else {
-                start_line
-            };
-    
-            // Adjust end_line to not exceed total_lines and ensure end_line >= start_line
-            let end_line = if end_line > total_lines {
-                total_lines
-            } else {
-                end_line
-            };
-    
-            let chunk = if end_line > start_line {
-                &content[start_line..end_line]
-            } else {
-                // If end_line <= start_line, take a single line to avoid empty slice
-                &content[start_line..start_line + 1.min(total_lines - start_line)]
-            };
-    
-            let chunk_length: usize = chunk.iter().map(|line| line.len()).sum();
-            let avg_length = if !chunk.is_empty() {
-                chunk_length / chunk.len().max(1)
-            } else {
-                0
-            };
-            let dot_count = (avg_length as f32 / chars_per_dot as f32).ceil() as usize;
-            let dots = ".".repeat(dot_count.min(minimap_width));
-            let padding = " ".repeat(minimap_width.saturating_sub(dot_count));
-    
-            let line = format!("{}{}", dots, padding);
-            minimap_content.push(Spans::from(line));
+            }
+            minimap_content.push(Spans::from(line_spans));
         }
     
         let minimap = Paragraph::new(minimap_content)
             .block(Block::default().borders(Borders::ALL).title("Minimap"))
-            .style(Style::default().bg(Color::Black).fg(Color::White));
+            .style(Style::default().bg(background_color));
     
         f.render_widget(minimap, area);
     }
-
+        
     fn switch_to_tab(&mut self, tab_index: usize) {
         if tab_index < self.tabs.len() {
             self.active_tab = tab_index;
