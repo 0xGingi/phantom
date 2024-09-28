@@ -1,5 +1,5 @@
 [package]
-name = "PhantomEditor"
+name = "phantom"
 version = "0.6.2"
 edition = "2021"
 

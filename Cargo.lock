@@ -3,7 +3,7 @@
 version = 3
 
 [[package]]
-name = "PhantomEditor"
+name = "phantom"
 version = "0.6.2"
 dependencies = [
  "clipboard",

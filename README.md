@@ -1,6 +1,6 @@
-# PhantomEditor
+# phantom
 
-PhantomEditor is a lightweight, terminal-based text editor written in Rust. It combines the simplicity of a basic text editor with some powerful features inspired by Vim.
+phantom is a lightweight, terminal-based text editor written in Rust. It combines the simplicity of a basic text editor with some powerful features inspired by Vim.
 
 ![image](https://github.com/user-attachments/assets/89cdd2c1-9829-49d9-9cc4-b9155f0f37dd)
 
@@ -24,12 +24,12 @@ PhantomEditor is a lightweight, terminal-based text editor written in Rust. It c
 
 2. Clone this repository:
    ```
-   git clone https://github.com/0xGingi/PhantomEditor.git
+   git clone https://github.com/0xGingi/phantom.git
    ```
 
 3. Navigate to the project directory:
    ```
-   cd PhantomEditor
+   cd phantom
    ```
 
 4. Build the project:
@@ -41,15 +41,15 @@ PhantomEditor is a lightweight, terminal-based text editor written in Rust. It c
 
 ## Usage
 
-To start PhantomEditor:
+To start phantom:
 ```
-./PhantomEditor
-./PhantomEditor file.txt
-./PhantomEditor ~/Project
+./phantom
+./phantom file.txt
+./phantom ~/Project
 ```
 
-If a filename is provided, PhantomEditor will attempt to open that file. Otherwise, it will start with a blank document.
-If a directory is provided, PhantomEditor will enter directory navigation mode
+If a filename is provided, phantom will attempt to open that file. Otherwise, it will start with a blank document.
+If a directory is provided, phantom will enter directory navigation mode
 
 ## Default Keybinds and Commands
 
@@ -122,4 +122,4 @@ You can change the keybinds in the config file and the colors in the colors file
 
 ## Debug Output
 
-PhantomEditor includes a debug output area that displays information about key presses, cursor position, and the results of operations like saving files.
+phantom includes a debug output area that displays information about key presses, cursor position, and the results of operations like saving files.
