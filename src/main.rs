@@ -458,59 +458,101 @@ impl Editor {
     }
 
 
-    fn toggle_minimap(&mut self) {
-        self.show_minimap = !self.show_minimap;
-        self.debug_messages.push(if self.show_minimap {
-            "Minimap shown".to_string()
+    fn toggle_minimap(&mut self) -> io::Result<bool> {
+        if !self.show_minimap {
+            if !self.tabs[self.active_tab].content.iter().all(|line| line.is_empty()) {
+                self.show_minimap = true;
+                self.debug_messages.push("Minimap shown".to_string());
+            } else {
+                self.debug_messages.push("Cannot show minimap: No content".to_string());
+            }
         } else {
-            "Minimap hidden".to_string()
-        });
+            self.show_minimap = false;
+            self.debug_messages.push("Minimap hidden".to_string());
+        }
+        Ok(false)
     }
 
-    fn render_minimap<B: tui::backend::Backend>(&self, f: &mut Frame<B>, area: Rect) {
+    fn render_minimap<B: tui::backend::Backend>(&mut self, f: &mut Frame<B>, area: Rect) {
         let tab = &self.tabs[self.active_tab];
         let content = &tab.content;
-        let total_lines = content.len();
-        
-        let minimap_height = area.height as usize - 2;
-        if minimap_height == 0 {
+    
+        // Early exit if content is empty
+        if content.iter().all(|line| line.is_empty()) {
+            let empty_minimap = Paragraph::new("No content")
+                .block(Block::default().borders(Borders::ALL).title("Minimap"))
+                .style(Style::default().bg(Color::Black).fg(Color::White));
+            f.render_widget(empty_minimap, area);
             return;
         }
-        
+    
+        let total_lines = content.len();
+    
+        // **FIXED LINES 491 & 503**
+        let minimap_height = (area.height as usize).saturating_sub(2); // Account for borders
+        if minimap_height == 0 {
+            self.debug_messages.push("Minimap area too small to render.".to_string());
+            return;
+        }
+    
         let scale = if total_lines > minimap_height {
             total_lines as f32 / minimap_height as f32
         } else {
             1.0
         };
-        
-        let minimap_width = area.width as usize - 2;
+    
+        let minimap_width = (area.width as usize).saturating_sub(2); // Account for borders
         let chars_per_dot = 3;
-        
+    
         let mut minimap_content = Vec::new();
-        
+    
         for i in 0..minimap_height {
             let start_line = (i as f32 * scale).floor() as usize;
             let end_line = ((i as f32 + 1.0) * scale).floor() as usize;
-            let chunk = if end_line > start_line {
-                &content[start_line..end_line.min(total_lines)]
+    
+            // Ensure start_line is within bounds
+            let start_line = if start_line >= total_lines {
+                self.debug_messages.push(format!(
+                    "Minimap: start_line ({}) >= total_lines ({}). Skipping.",
+                    start_line, total_lines
+                ));
+                total_lines // This will result in an empty slice
             } else {
-                &content[start_line..start_line + 1]
+                start_line
             };
-            
+    
+            // Adjust end_line to not exceed total_lines and ensure end_line >= start_line
+            let end_line = if end_line > total_lines {
+                total_lines
+            } else {
+                end_line
+            };
+    
+            let chunk = if end_line > start_line {
+                &content[start_line..end_line]
+            } else {
+                // If end_line <= start_line, take a single line to avoid empty slice
+                &content[start_line..start_line + 1.min(total_lines - start_line)]
+            };
+    
             let chunk_length: usize = chunk.iter().map(|line| line.len()).sum();
-            let avg_length = chunk_length / chunk.len().max(1);
+            let avg_length = if !chunk.is_empty() {
+                chunk_length / chunk.len().max(1)
+            } else {
+                0
+            };
             let dot_count = (avg_length as f32 / chars_per_dot as f32).ceil() as usize;
             let dots = ".".repeat(dot_count.min(minimap_width));
             let padding = " ".repeat(minimap_width.saturating_sub(dot_count));
-            
+    
             let line = format!("{}{}", dots, padding);
             minimap_content.push(Spans::from(line));
         }
-        
+    
         let minimap = Paragraph::new(minimap_content)
             .block(Block::default().borders(Borders::ALL).title("Minimap"))
             .style(Style::default().bg(Color::Black).fg(Color::White));
-        
+    
         f.render_widget(minimap, area);
     }
 
@@ -965,80 +1007,129 @@ impl Editor {
 
     fn execute_action(&mut self, action: &str) -> io::Result<bool> {
         match action {
-            "enter_insert_mode" => self.mode = Mode::Insert,
+            "enter_insert_mode" => {
+                self.mode = Mode::Insert;
+                Ok(false)
+            },
             "append" => {
                 self.mode = Mode::Insert;
                 self.move_cursor_right();
+                Ok(false)
             },
             "open_line_below" => {
                 self.insert_line_below();
                 self.mode = Mode::Insert;
+                Ok(false)
             },
             "open_line_above" => {
                 self.insert_line_above();
                 self.mode = Mode::Insert;
+                Ok(false)
             },
-            "delete_line" => self.delete_line(),
-            "yank_line" => self.yank_line(),
-            "paste_after" => self.paste_after(),
+            "delete_line" => {
+                self.delete_line();
+                Ok(false)
+            },
+            "yank_line" => {
+                self.yank_line();
+                Ok(false)
+            },
+            "paste_after" => {
+                self.paste_after();
+                Ok(false)
+            },
             "enter_visual_mode" => {
                 self.mode = Mode::Visual;
                 self.visual_start = self.cursor_position;
+                Ok(false)
             },
             "enter_command_mode" => {
                 self.mode = Mode::Command;
                 self.command_buffer.clear();
+                Ok(false)
             },
-            "toggle_debug_menu" => self.toggle_debug_menu(),
-            "enter_directory_nav_mode" => self.enter_directory_nav_mode()?,
-            "enter_search_mode" => self.enter_search_mode(),
-            "next_search_result" => self.next_search_result(),
-            "previous_search_result" => self.previous_search_result(),
-            "copy_selection" => self.copy_selection(),
-            "paste_clipboard" => self.paste_clipboard(),
-            "undo" => self.undo(),
-            "redo" => self.redo(),
-            "toggle_sidebar" => return self.toggle_sidebar(),
+            "toggle_debug_menu" => {
+                self.toggle_debug_menu();
+                Ok(false)
+            },
+            "enter_directory_nav_mode" => self.enter_directory_nav_mode(),
+            "enter_search_mode" => {
+                self.enter_search_mode();
+                Ok(false)
+            },
+            "next_search_result" => {
+                self.next_search_result();
+                Ok(false)
+            },
+            "previous_search_result" => {
+                self.previous_search_result();
+                Ok(false)
+            },
+            "copy_selection" => {
+                self.copy_selection();
+                Ok(false)
+            },
+            "paste_clipboard" => {
+                self.paste_clipboard();
+                Ok(false)
+            },
+            "undo" => {
+                self.undo();
+                Ok(false)
+            },
+            "redo" => {
+                self.redo();
+                Ok(false)
+            },
+            "toggle_sidebar" => self.toggle_sidebar(),
             "next_tab" => {
                 self.next_tab();
                 self.update_current_tab_info();
+                Ok(false)
             },
             "previous_tab" => {
                 self.previous_tab();
                 self.update_current_tab_info();
+                Ok(false)
             },
             "switch_to_tab_1" => {
                 self.switch_to_tab(0);
                 self.update_current_tab_info();
+                Ok(false)
             },
             "switch_to_tab_2" => {
                 self.switch_to_tab(1);
                 self.update_current_tab_info();
+                Ok(false)
             },
             "switch_to_tab_3" => {
                 self.switch_to_tab(2);
                 self.update_current_tab_info();
+                Ok(false)
             },
             "switch_to_tab_4" => {
                 self.switch_to_tab(3);
                 self.update_current_tab_info();
+                Ok(false)
             },
             "switch_to_tab_5" => {
                 self.switch_to_tab(4);
                 self.update_current_tab_info();
+                Ok(false)
             },
             "new_tab" => {
                 self.new_tab();
                 self.update_current_tab_info();
+                Ok(false)
             },
             "close_tab" => {
                 self.close_tab();
                 self.update_current_tab_info();
+                Ok(false)
             },
             "toggle_minimap" => self.toggle_minimap(),
-            _ => {},
+            _ => Ok(false),
         }
-        Ok(false)
     }
 
     fn handle_sidebar_active_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
@@ -1492,7 +1583,7 @@ impl Editor {
         });
     }
 
-    fn enter_directory_nav_mode(&mut self) -> io::Result<()> {
+    fn enter_directory_nav_mode(&mut self) -> io::Result<bool> {
         let current_dir = if let Some(ref file) = self.current_file {
             Path::new(file).parent().unwrap_or(Path::new(".")).to_path_buf()
         } else {
@@ -1500,44 +1591,41 @@ impl Editor {
         };
         self.file_selector = Some(FileSelector::new(&current_dir)?);
         self.mode = Mode::DirectoryNav;
-        Ok(())
+        Ok(false)
     }
 
     fn ui<B: tui::backend::Backend>(&mut self, f: &mut Frame<B>) {
-        let main_layout = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(
-                match (self.show_sidebar, self.show_minimap) {
-                    (true, true) => vec![
-                        Constraint::Length(self.sidebar_width),
-                        Constraint::Min(1),
-                        Constraint::Length(self.minimap_width),
-                    ],
-                    (true, false) => vec![
-                        Constraint::Length(self.sidebar_width),
-                        Constraint::Min(1),
-                    ],
-                    (false, true) => vec![
-                        Constraint::Min(1),
-                        Constraint::Length(self.minimap_width),
-                    ],
-                    (false, false) => vec![Constraint::Min(1)],
-                }
-            )
-            .split(f.size());
-    
-            let editor_area = match (self.show_sidebar, self.show_minimap) {
-                (true, _) => main_layout[1],
-                (false, true) => main_layout[0],
-                (false, false) => main_layout[0],
-            };
+        let total_width = f.size().width;
+        let sidebar_width = if self.show_sidebar { self.sidebar_width } else { 0 };
+        let minimap_width = if self.show_minimap && !self.tabs[self.active_tab].content.is_empty() { self.minimap_width } else { 0 };
+        let editor_width = total_width.saturating_sub(sidebar_width + minimap_width);
         
-            if self.show_sidebar {
-                if let Some(file_selector) = &self.file_selector {
-                    file_selector.render(f, main_layout[0]);
-                }
+        let mut constraints = vec![];
+        if sidebar_width > 0 {
+            constraints.push(Constraint::Length(sidebar_width));
+        }
+        constraints.push(Constraint::Length(editor_width));
+        if minimap_width > 0 {
+            constraints.push(Constraint::Length(minimap_width));
+        }    
+
+        let main_layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
+        .split(f.size());
+    
+        let mut current_layout_index = 0;
+                    
+        if self.show_sidebar {
+            if let Some(file_selector) = &self.file_selector {
+                file_selector.render(f, main_layout[current_layout_index]);
             }
-            
+            current_layout_index += 1;
+        }
+
+        let editor_area = main_layout[current_layout_index];
+        current_layout_index += 1;    
+                            
         let tab_bar_height = 3;
         let debug_height = if self.show_debug { 6 } else { 0 };
         let editor_layout = Layout::default()
@@ -1559,7 +1647,7 @@ impl Editor {
                 }
             )
             .split(editor_area);
-    
+        
         let tab_titles: Vec<Spans> = self.tabs.iter().enumerate().map(|(i, tab)| {
             let title = tab.current_file.as_ref()
                 .and_then(|f| Path::new(f).file_name())
@@ -1764,15 +1852,10 @@ impl Editor {
             adjusted_cursor_x.min(editor_area.width.saturating_sub(1)),
             adjusted_cursor_y
         );
-    
-        if self.show_minimap {
-            let minimap_area = match (self.show_sidebar, self.show_minimap) {
-                (true, true) => main_layout[2],
-                (false, true) => main_layout[1],
-                _ => unreachable!(),
-            };
-            self.render_minimap(f, minimap_area);
-        }
+
+        if self.show_minimap && !self.tabs[self.active_tab].content.is_empty() && current_layout_index < main_layout.len() {
+            self.render_minimap(f, main_layout[current_layout_index]);
+        }    
     }
 
     fn enter_search_mode(&mut self) {
