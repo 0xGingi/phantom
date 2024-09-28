@@ -8,6 +8,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::env;
+use std::fmt;
 use tui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -67,6 +68,21 @@ struct Tab {
     syntax: String,
     undo_stack: VecDeque<EditOperation>,
     redo_stack: VecDeque<EditOperation>,
+}
+
+impl fmt::Display for Mode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Mode::Normal => write!(f, "Normal"),
+            Mode::Insert => write!(f, "Insert"),
+            Mode::Visual => write!(f, "Visual"),
+            Mode::Command => write!(f, "Command"),
+            Mode::Search => write!(f, "Search"),
+            Mode::FileSelect => write!(f, "FileSelect"),
+            Mode::DirectoryNav => write!(f, "DirectoryNav"),
+            Mode::SidebarActive => write!(f, "SidebarActive"),
+        }
+    }
 }
 
 impl Tab {
@@ -384,6 +400,64 @@ impl Editor {
         }
     }
 
+    fn render_sidebar<B: tui::backend::Backend>(&self, f: &mut Frame<B>, area: Rect) {
+        let items: Vec<ListItem> = self.tabs
+            .iter()
+            .enumerate()
+            .map(|(i, tab)| {
+                let title = tab.current_file.as_ref()
+                    .map(|path| {
+                        std::path::Path::new(path)
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or(path)
+                    })
+                    .unwrap_or("Untitled");
+                ListItem::new(format!("{}: {}", i + 1, title))
+            })
+            .collect();
+
+        let list = List::new(items)
+            .block(Block::default().title("Open Files").borders(Borders::ALL))
+            .highlight_style(Style::default().add_modifier(Modifier::BOLD))
+            .highlight_symbol("> ");
+
+        f.render_widget(list, area);
+    }
+
+
+    fn enter_file_select_mode(&mut self) -> io::Result<()> {
+        let current_dir = if let Some(ref file) = self.current_file {
+            Path::new(file).parent().unwrap_or(Path::new(".")).to_path_buf()
+        } else {
+            env::current_dir()?
+        };
+        self.file_selector = Some(FileSelector::new(&current_dir)?);
+        self.mode = Mode::FileSelect;
+        Ok(())
+    }
+
+    fn render_editor_content<B: tui::backend::Backend>(&self, f: &mut Frame<B>, area: Rect) {
+        let tab = &self.tabs[self.active_tab];
+        let content = tab.content.iter()
+            .skip(tab.scroll_offset)
+            .take(area.height as usize)
+            .map(|line| {
+                let trimmed_line = if line.len() > tab.horizontal_scroll {
+                    &line[tab.horizontal_scroll..]
+                } else {
+                    ""
+                };
+                Spans::from(trimmed_line)
+            })
+            .collect::<Vec<Spans>>();
+
+        let paragraph = Paragraph::new(content)
+            .block(Block::default().borders(Borders::ALL).title("Editor"));
+        f.render_widget(paragraph, area);
+    }
+
+
     fn toggle_minimap(&mut self) {
         self.show_minimap = !self.show_minimap;
         self.debug_messages.push(if self.show_minimap {
@@ -411,7 +485,6 @@ impl Editor {
         
         let minimap_width = area.width as usize - 2;
         let chars_per_dot = 3;
-        let max_line_length = content.iter().map(|line| line.len()).max().unwrap_or(1);
         
         let mut minimap_content = Vec::new();
         
@@ -440,7 +513,7 @@ impl Editor {
         
         f.render_widget(minimap, area);
     }
-        
+
     fn switch_to_tab(&mut self, tab_index: usize) {
         if tab_index < self.tabs.len() {
             self.active_tab = tab_index;
@@ -1434,42 +1507,37 @@ impl Editor {
         let main_layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints(
-                if self.show_sidebar {
-                    if self.show_minimap {
-                        vec![
-                            Constraint::Length(self.sidebar_width),
-                            Constraint::Min(1),
-                            Constraint::Length(self.minimap_width),
-                        ]
-                    } else {
-                        vec![
-                            Constraint::Length(self.sidebar_width),
-                            Constraint::Min(1),
-                        ]
-                    }
-                } else if self.show_minimap {
-                    vec![
+                match (self.show_sidebar, self.show_minimap) {
+                    (true, true) => vec![
+                        Constraint::Length(self.sidebar_width),
                         Constraint::Min(1),
                         Constraint::Length(self.minimap_width),
-                    ]
-                } else {
-                    vec![Constraint::Min(1)]
+                    ],
+                    (true, false) => vec![
+                        Constraint::Length(self.sidebar_width),
+                        Constraint::Min(1),
+                    ],
+                    (false, true) => vec![
+                        Constraint::Min(1),
+                        Constraint::Length(self.minimap_width),
+                    ],
+                    (false, false) => vec![Constraint::Min(1)],
                 }
             )
             .split(f.size());
-
-        let editor_area = if self.show_sidebar {
-            if self.show_minimap {
-                main_layout[1]
-            } else {
-                main_layout[1]
-            }
-        } else if self.show_minimap {
-            main_layout[0]
-        } else {
-            main_layout[0]
-        };
     
+            let editor_area = match (self.show_sidebar, self.show_minimap) {
+                (true, _) => main_layout[1],
+                (false, true) => main_layout[0],
+                (false, false) => main_layout[0],
+            };
+        
+            if self.show_sidebar {
+                if let Some(file_selector) = &self.file_selector {
+                    file_selector.render(f, main_layout[0]);
+                }
+            }
+            
         let tab_bar_height = 3;
         let debug_height = if self.show_debug { 6 } else { 0 };
         let editor_layout = Layout::default()
@@ -1564,34 +1632,34 @@ impl Editor {
             .take(editor_height)
             .enumerate();
         
-            let mut text = Vec::new();
-            for (index, line) in visible_content {
-                let ranges: Vec<(SyntectStyle, &str)> = h.highlight_line(line, &self.ps).unwrap();
-                let mut styled_spans = Vec::new();
-                let mut line_length = 0;
-                for (style, content) in ranges {
-                    let color = style.foreground;
-                    let visible_content = if line_length >= horizontal_scroll {
-                        content
-                    } else if line_length + content.len() > horizontal_scroll {
-                        &content[horizontal_scroll - line_length..]
-                    } else {
-                        ""
-                    };
-                    line_length += content.len();
-                    if !visible_content.is_empty() {
-                        styled_spans.push(Span::styled(
-                            visible_content.to_string(),
-                            Style::default().fg(Color::Rgb(color.r, color.g, color.b))
-                        ));
-                    }
-                    if line_length >= horizontal_scroll + editor_width {
-                        break;
-                    }
+        let mut text = Vec::new();
+        for (index, line) in visible_content {
+            let ranges: Vec<(SyntectStyle, &str)> = h.highlight_line(line, &self.ps).unwrap();
+            let mut styled_spans = Vec::new();
+            let mut line_length = 0;
+            for (style, content) in ranges {
+                let color = style.foreground;
+                let visible_content = if line_length >= horizontal_scroll {
+                    content
+                } else if line_length + content.len() > horizontal_scroll {
+                    &content[horizontal_scroll - line_length..]
+                } else {
+                    ""
+                };
+                line_length += content.len();
+                if !visible_content.is_empty() {
+                    styled_spans.push(Span::styled(
+                        visible_content.to_string(),
+                        Style::default().fg(Color::Rgb(color.r, color.g, color.b))
+                    ));
                 }
-        
-                if let (Some(start), Some(end)) = (self.mouse_selection_start, self.mouse_selection_end) {
-                    if start != end {
+                if line_length >= horizontal_scroll + editor_width {
+                    break;
+                }
+            }
+    
+            if let (Some(start), Some(end)) = (self.mouse_selection_start, self.mouse_selection_end) {
+                if start != end {
                     let (start, end) = if start <= end { (start, end) } else { (end, start) };
                     let y = index + scroll_offset;
                     if y >= start.1 && y <= end.1 {
@@ -1602,7 +1670,7 @@ impl Editor {
                             let mut result = Vec::new();
                             let span_start = i;
                             let span_end = span_start + span.content.len();
-        
+    
                             if span_end <= start_x || span_start >= end_x {
                                 vec![span]
                             } else {
@@ -1632,43 +1700,34 @@ impl Editor {
                     }
                 }
             }
-
-            if self.show_minimap {
-                let minimap_area = if self.show_sidebar {
-                    main_layout[2]
-                } else {
-                    main_layout[1]
-                };
-                self.render_minimap(f, minimap_area);
-            }
                                             
-                if index + scroll_offset == cursor_position.1 {
-                    let mut line_spans = Vec::new();
-                    let mut current_len = 0;
-                    for span in styled_spans {
-                        let span_len = span.content.len();
-                        if current_len <= cursor_position.0 - horizontal_scroll && cursor_position.0 - horizontal_scroll < current_len + span_len {
-                            let (before, after) = span.content.split_at(cursor_position.0 - horizontal_scroll - current_len);
-                            if !before.is_empty() {
-                                line_spans.push(Span::styled(before.to_string(), span.style));
-                            }
-                            line_spans.push(Span::styled("".to_string(), self.cursor_style));
-                            if !after.is_empty() {
-                                line_spans.push(Span::styled(after.to_string(), span.style));
-                            }
-                        } else {
-                            line_spans.push(span);
+            if index + scroll_offset == cursor_position.1 {
+                let mut line_spans = Vec::new();
+                let mut current_len = 0;
+                for span in styled_spans {
+                    let span_len = span.content.len();
+                    if current_len <= cursor_position.0 - horizontal_scroll && cursor_position.0 - horizontal_scroll < current_len + span_len {
+                        let (before, after) = span.content.split_at(cursor_position.0 - horizontal_scroll - current_len);
+                        if !before.is_empty() {
+                            line_spans.push(Span::styled(before.to_string(), span.style));
                         }
-                        current_len += span_len;
-                    }
-                    if cursor_position.0 - horizontal_scroll >= current_len {
                         line_spans.push(Span::styled("".to_string(), self.cursor_style));
+                        if !after.is_empty() {
+                            line_spans.push(Span::styled(after.to_string(), span.style));
+                        }
+                    } else {
+                        line_spans.push(span);
                     }
-                    text.push(Spans::from(line_spans));
-                } else {
-                    text.push(Spans::from(styled_spans));
+                    current_len += span_len;
                 }
+                if cursor_position.0 - horizontal_scroll >= current_len {
+                    line_spans.push(Span::styled("".to_string(), self.cursor_style));
+                }
+                text.push(Spans::from(line_spans));
+            } else {
+                text.push(Spans::from(styled_spans));
             }
+        }
             
         let paragraph = Paragraph::new(text)
             .block(block)
@@ -1704,7 +1763,16 @@ impl Editor {
         f.set_cursor(
             adjusted_cursor_x.min(editor_area.width.saturating_sub(1)),
             adjusted_cursor_y
-        )
+        );
+    
+        if self.show_minimap {
+            let minimap_area = match (self.show_sidebar, self.show_minimap) {
+                (true, true) => main_layout[2],
+                (false, true) => main_layout[1],
+                _ => unreachable!(),
+            };
+            self.render_minimap(f, minimap_area);
+        }
     }
 
     fn enter_search_mode(&mut self) {
