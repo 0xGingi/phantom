@@ -1,5 +1,5 @@
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseEventKind, MouseButton},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -338,6 +338,8 @@ struct Editor {
     pending_key: Option<String>,
     tabs: Vec<Tab>,
     active_tab: usize,
+    mouse_selection_start: Option<(usize, usize)>,
+    mouse_selection_end: Option<(usize, usize)>,
 }
 
 impl Editor {
@@ -373,6 +375,18 @@ impl Editor {
             pending_key: None,
             tabs: vec![Tab::new()],
             active_tab: 0,
+            mouse_selection_start: None,
+            mouse_selection_end: None,
+        }
+    }
+
+    fn switch_to_tab(&mut self, tab_index: usize) {
+        if tab_index < self.tabs.len() {
+            self.active_tab = tab_index;
+            self.debug_messages.push(format!("Switched to tab {}", tab_index + 1));
+            self.update_current_tab_info();
+        } else {
+            self.debug_messages.push(format!("Tab {} does not exist", tab_index + 1));
         }
     }
 
@@ -412,13 +426,6 @@ impl Editor {
     fn next_tab(&mut self) {
         if !self.tabs.is_empty() {
             self.active_tab = (self.active_tab + 1) % self.tabs.len();
-            self.update_current_tab_info();
-        }
-    }
-
-    fn switch_to_tab(&mut self, index: usize) {
-        if index < self.tabs.len() {
-            self.active_tab = index;
             self.update_current_tab_info();
         }
     }
@@ -558,36 +565,37 @@ impl Editor {
     }
         
     fn key_event_to_string(key: event::KeyEvent) -> String {
-        let mut key_str = String::new();
+        let mut key_string = String::new();
         if key.modifiers.contains(KeyModifiers::CONTROL) {
-            key_str.push_str("Ctrl+");
+            key_string.push_str("Ctrl+");
         }
         if key.modifiers.contains(KeyModifiers::ALT) {
-            key_str.push_str("Alt+");
+            key_string.push_str("Alt+");
         }
         if key.modifiers.contains(KeyModifiers::SHIFT) {
-            key_str.push_str("Shift+");
+            key_string.push_str("Shift+");
         }
         match key.code {
-            KeyCode::Char(c) => key_str.push(c),
-            KeyCode::Enter => key_str.push_str("Enter"),
-            KeyCode::Left => key_str.push_str("Left"),
-            KeyCode::Right => key_str.push_str("Right"),
-            KeyCode::Up => key_str.push_str("Up"),
-            KeyCode::Down => key_str.push_str("Down"),
-            KeyCode::Home => key_str.push_str("Home"),
-            KeyCode::End => key_str.push_str("End"),
-            KeyCode::PageUp => key_str.push_str("PageUp"),
-            KeyCode::PageDown => key_str.push_str("PageDown"),
-            KeyCode::Tab => key_str.push_str("Tab"),
-            KeyCode::BackTab => key_str.push_str("BackTab"),
-            KeyCode::Delete => key_str.push_str("Delete"),
-            KeyCode::Insert => key_str.push_str("Insert"),
-            KeyCode::F(n) => key_str.push_str(&format!("F{}", n)),
-            KeyCode::Esc => key_str.push_str("Esc"),
-            _ => {},
+            KeyCode::Char(c) => key_string.push(c),
+            KeyCode::F(n) => key_string.push_str(&format!("F{}", n)),
+            KeyCode::Enter => key_string.push_str("Enter"),
+            KeyCode::Left => key_string.push_str("Left"),
+            KeyCode::Right => key_string.push_str("Right"),
+            KeyCode::Up => key_string.push_str("Up"),
+            KeyCode::Down => key_string.push_str("Down"),
+            KeyCode::Backspace => key_string.push_str("Backspace"),
+            KeyCode::Delete => key_string.push_str("Delete"),
+            KeyCode::Home => key_string.push_str("Home"),
+            KeyCode::End => key_string.push_str("End"),
+            KeyCode::PageUp => key_string.push_str("PageUp"),
+            KeyCode::PageDown => key_string.push_str("PageDown"),
+            KeyCode::Tab => key_string.push_str("Tab"),
+            KeyCode::BackTab => key_string.push_str("BackTab"),
+            KeyCode::Insert => key_string.push_str("Insert"),
+            KeyCode::Esc => key_string.push_str("Esc"),
+            _ => key_string.push_str("Unknown"),
         }
-        key_str
+        key_string
     }
 
     fn create_default_config(config_path: &PathBuf) -> Result<(), Box<dyn Error>> {
@@ -624,30 +632,116 @@ impl Editor {
         Ok(())
     }
 
-    fn run_app<B: tui::backend::Backend>(&mut self, terminal: &mut Terminal<B>) -> io::Result<()> {
+    fn run_app<B: tui::backend::Backend>(&mut self, terminal: &mut Terminal<B>) -> io::Result<bool> {
         loop {
             terminal.draw(|f| self.ui(f))?;
-
-            if let Event::Key(key) = event::read()? {
-                self.debug_messages.push(format!("Key pressed: {:?}", key));
-                self.debug_messages.push(format!("Cursor: ({}, {})", self.cursor_position.0, self.cursor_position.1));
-                
-                while self.debug_messages.len() > 5 {
-                    self.debug_messages.remove(0);
-                }
-
-                match key.code {
-                    KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        return Ok(());
-                    }
-                    _ => {
-                        if self.handle_key_event(key)? {
-                            return Ok(());
+    
+            if let Ok(event) = event::read() {
+                match event {
+                    Event::Mouse(mouse_event) => {
+                        match mouse_event.kind {
+                            MouseEventKind::Down(MouseButton::Left) => {
+                                let (x, y) = (mouse_event.column as usize, mouse_event.row as usize);
+                                self.start_mouse_selection(x, y);
+                            }
+                            MouseEventKind::Drag(MouseButton::Left) => {
+                                let (x, y) = (mouse_event.column as usize, mouse_event.row as usize);
+                                self.update_mouse_selection(x, y);
+                            }
+                            MouseEventKind::Up(MouseButton::Right) => {
+                                self.copy_selection_to_clipboard();
+                                self.end_mouse_selection();
+                            }          
+                            _ => {}
                         }
                     }
+                    Event::Key(key) => {
+                        if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('q') {
+                            return Ok(true);
+                        }
+    
+                        if key.modifiers == KeyModifiers::CONTROL {
+                            match key.code {
+                                KeyCode::Char(c) if c >= '1' && c <= '5' => {
+                                    let tab_index = c.to_digit(10).unwrap() as usize - 1;
+                                    self.switch_to_tab(tab_index);
+                                    continue;
+                                }
+                                _ => {}
+                            }
+                        }
+    
+                        self.debug_messages.push(format!("Key pressed: {:?}", key));
+                        self.debug_messages.push(format!("Cursor: ({}, {})", self.cursor_position.0, self.cursor_position.1));
+                        
+                        while self.debug_messages.len() > 5 {
+                            self.debug_messages.remove(0);
+                        }
+    
+                        if self.handle_key_event(key)? {
+                            return Ok(true);
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
+    }
+
+    fn copy_selection_to_clipboard(&mut self) {
+        if let (Some(start), Some(end)) = (self.mouse_selection_start, self.mouse_selection_end) {
+            let (start, end) = if start <= end { (start, end) } else { (end, start) };
+            let tab = &self.tabs[self.active_tab];
+            let mut selected_text = String::new();
+    
+            for i in start.1..=end.1 {
+                if i >= tab.content.len() {
+                    break;
+                }
+                let line = &tab.content[i];
+                if i == start.1 && i == end.1 {
+                    selected_text.push_str(&line[start.0.min(line.len())..end.0.min(line.len())]);
+                } else if i == start.1 {
+                    selected_text.push_str(&line[start.0.min(line.len())..]);
+                } else if i == end.1 {
+                    selected_text.push_str(&line[..end.0.min(line.len())]);
+                } else {
+                    selected_text.push_str(line);
+                }
+                if i != end.1 {
+                    selected_text.push('\n');
+                }
+            }
+    
+            if let Err(e) = self.clipboard_context.set_contents(selected_text) {
+                self.debug_messages.push(format!("Failed to copy to clipboard: {}", e));
+            } else {
+                self.debug_messages.push("Text copied to clipboard".to_string());
+            }
+        }
+    }
+    
+    fn start_mouse_selection(&mut self, x: usize, y: usize) {
+        let position = self.screen_to_content_position(x, y);
+        self.mouse_selection_start = Some(position);
+        self.mouse_selection_end = Some(position);
+    }
+
+    fn update_mouse_selection(&mut self, x: usize, y: usize) {
+        let position = self.screen_to_content_position(x, y);
+        self.mouse_selection_end = Some(position);
+    }
+
+    fn end_mouse_selection(&mut self) {
+        self.mouse_selection_start = None;
+        self.mouse_selection_end = None;
+    }
+
+    fn screen_to_content_position(&self, x: usize, y: usize) -> (usize, usize) {
+        let tab = &self.tabs[self.active_tab];
+        let line = y.saturating_sub(4) + tab.scroll_offset;
+        let column = x.saturating_sub(1) + tab.horizontal_scroll;
+        (column, line)
     }
 
     fn handle_key_event(&mut self, key: event::KeyEvent) -> io::Result<bool> {
@@ -686,6 +780,17 @@ impl Editor {
 
     fn handle_normal_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
         let key_str = Self::key_event_to_string(key);
+
+        if key.modifiers == KeyModifiers::CONTROL {
+            match key.code {
+                KeyCode::Char(c) if c >= '1' && c <= '5' => {
+                    let tab_index = c.to_digit(10).unwrap() as usize - 1;
+                    self.switch_to_tab(tab_index);
+                    return Ok(false);
+                }
+                _ => {}
+            }
+        }    
         
         if let Some(pending) = self.pending_key.take() {
             let combined_key = format!("{}{}", pending, key_str);
@@ -1307,34 +1412,34 @@ impl Editor {
                 }
             )
             .split(editor_area);
-
-            let tab_titles: Vec<Spans> = self.tabs.iter().enumerate().map(|(i, tab)| {
-                let title = tab.current_file.as_ref()
-                    .and_then(|f| Path::new(f).file_name())
-                    .and_then(|f| f.to_str())
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| format!("Untitled-{}", i + 1));
-        
-                let style = if i == self.active_tab {
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::White)
-                };
-                Spans::from(vec![
-                    Span::styled(format!(" {} ", i + 1), style),
-                    Span::styled(title, style),
-                    Span::raw(" "),
-                ])
-            }).collect();
-        
-            let tab_bar = Tabs::new(tab_titles)
+    
+        let tab_titles: Vec<Spans> = self.tabs.iter().enumerate().map(|(i, tab)| {
+            let title = tab.current_file.as_ref()
+                .and_then(|f| Path::new(f).file_name())
+                .and_then(|f| f.to_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("Untitled-{}", i + 1));
+    
+            let style = if i == self.active_tab {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            Spans::from(vec![
+                Span::styled(format!(" {} ", i + 1), style),
+                Span::styled(title, style),
+                Span::raw(" "),
+            ])
+        }).collect();
+    
+        let tab_bar = Tabs::new(tab_titles)
             .block(Block::default().borders(Borders::ALL).title("Tabs"))
             .select(self.active_tab)
             .style(Style::default().fg(Color::White))
             .highlight_style(Style::default().fg(Color::Yellow));
     
         f.render_widget(tab_bar, editor_layout[0]);
-                            
+    
         let mode_indicator = match self.mode {
             Mode::Normal => "NORMAL",
             Mode::Insert => "INSERT",
@@ -1351,10 +1456,10 @@ impl Editor {
             .title(Span::styled(
                 format!("Phantom - {}", mode_indicator),
                 Style::default()
-                .fg(Self::parse_color(&self.color_config.foreground))
-                .add_modifier(Modifier::BOLD),
-        ));
-        
+                    .fg(Self::parse_color(&self.color_config.foreground))
+                    .add_modifier(Modifier::BOLD),
+            ));
+    
         let syntax = self.ps.find_syntax_by_extension("rs")
             .or_else(|| self.ps.find_syntax_by_name(&self.syntax))
             .unwrap_or_else(|| self.ps.find_syntax_plain_text());
@@ -1379,6 +1484,7 @@ impl Editor {
             .skip(scroll_offset)
             .take(editor_height)
             .enumerate();
+        
             let mut text = Vec::new();
             for (index, line) in visible_content {
                 let ranges: Vec<(SyntectStyle, &str)> = h.highlight_line(line, &self.ps).unwrap();
@@ -1404,7 +1510,50 @@ impl Editor {
                         break;
                     }
                 }
-                
+        
+                if let (Some(start), Some(end)) = (self.mouse_selection_start, self.mouse_selection_end) {
+                    if start != end {
+                    let (start, end) = if start <= end { (start, end) } else { (end, start) };
+                    let y = index + scroll_offset;
+                    if y >= start.1 && y <= end.1 {
+                        let start_x = if y == start.1 { start.0.saturating_sub(horizontal_scroll) } else { 0 };
+                        let end_x = if y == end.1 { end.0.saturating_sub(horizontal_scroll) } else { editor_width };
+                        
+                        styled_spans = styled_spans.into_iter().enumerate().flat_map(|(i, span)| {
+                            let mut result = Vec::new();
+                            let span_start = i;
+                            let span_end = span_start + span.content.len();
+        
+                            if span_end <= start_x || span_start >= end_x {
+                                vec![span]
+                            } else {
+                                if span_start < start_x {
+                                    result.push(Span::styled(
+                                        span.content[..(start_x - span_start).min(span.content.len())].to_string(),
+                                        span.style
+                                    ));
+                                }
+                                let highlight_start = start_x.saturating_sub(span_start);
+                                let highlight_end = (end_x.saturating_sub(span_start)).min(span.content.len());
+                                if highlight_start < highlight_end {
+                                    result.push(Span::styled(
+                                        span.content[highlight_start..highlight_end].to_string(),
+                                        Style::default().bg(Color::Gray).fg(Color::Black)
+                                    ));
+                                }
+                                if span_end > end_x {
+                                    result.push(Span::styled(
+                                        span.content[(end_x.saturating_sub(span_start))..].to_string(),
+                                        span.style
+                                    ));
+                                }
+                                result
+                            }
+                        }).collect();
+                    }
+                }
+            }
+                                            
                 if index + scroll_offset == cursor_position.1 {
                     let mut line_spans = Vec::new();
                     let mut current_len = 0;
@@ -1432,19 +1581,19 @@ impl Editor {
                     text.push(Spans::from(styled_spans));
                 }
             }
-        
+            
         let paragraph = Paragraph::new(text)
             .block(block)
             .style(Style::default().bg(Self::parse_color(&self.color_config.background)));
         f.render_widget(paragraph, editor_layout[editor_chunk_index]);
-        
+    
         if self.show_debug {
             let debug_messages: Vec<Spans> = self.debug_messages.iter().map(|m| Spans::from(m.clone())).collect();
             let debug_paragraph = Paragraph::new(debug_messages)
                 .block(Block::default().borders(Borders::ALL).title("Debug Output"));
             f.render_widget(debug_paragraph, editor_layout[1]);
         }
-        
+    
         if self.mode == Mode::Command {
             let command_text = Spans::from(format!(":{}", self.command_buffer));
             let command_paragraph = Paragraph::new(vec![command_text]);
@@ -1454,21 +1603,21 @@ impl Editor {
             let search_paragraph = Paragraph::new(vec![search_text]);
             f.render_widget(search_paragraph, editor_layout[editor_layout.len() - 1]);
         }
-        
+    
         let cursor_x = (cursor_position.0 - horizontal_scroll) as u16 + 1 + if self.show_sidebar { self.sidebar_width } else { 0 };
         let cursor_y = (cursor_position.1 - scroll_offset) as u16 + 1 + tab_bar_height + debug_height;
     
         let max_y = editor_layout[editor_chunk_index].height.saturating_sub(1);
         let cursor_y = cursor_y.min(max_y);
     
-        let adjusted_cursor_x = cursor_x ;
-        let adjusted_cursor_y = cursor_y ;
+        let adjusted_cursor_x = cursor_x;
+        let adjusted_cursor_y = cursor_y;
     
         f.set_cursor(
             adjusted_cursor_x.min(editor_area.width.saturating_sub(1)),
             adjusted_cursor_y
         )
-        }
+    }
 
     fn enter_search_mode(&mut self) {
         self.mode = Mode::Search;
