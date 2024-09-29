@@ -3,22 +3,6 @@
 version = 3
 
 [[package]]
-name = "phantom"
-version = "0.6.2"
-dependencies = [
- "clipboard",
- "crossterm 0.26.1",
- "dirs",
- "ropey",
- "serde",
- "serde_json",
- "syntect",
- "toml",
- "tui",
- "unicode-width",
-]
-
-[[package]]
 name = "adler2"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -439,6 +423,22 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-targets 0.52.6",
+]
+
+[[package]]
+name = "phantom"
+version = "0.6.3"
+dependencies = [
+ "clipboard",
+ "crossterm 0.26.1",
+ "dirs",
+ "ropey",
+ "serde",
+ "serde_json",
+ "syntect",
+ "toml",
+ "tui",
+ "unicode-width",
 ]
 
 [[package]]

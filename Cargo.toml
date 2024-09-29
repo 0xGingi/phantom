@@ -1,6 +1,6 @@
 [package]
 name = "phantom"
-version = "0.6.2"
+version = "0.7.0"
 edition = "2021"
 
 [dependencies]
@@ -9,8 +9,12 @@ tui = { version = "0.19", default-features = false, features = ['crossterm'] }
 ropey = "1.5"
 syntect = { version = "5.0", features = ["default-fancy"] }
 unicode-width = "0.1"
-clipboard = "0.5.0"
+clipboard = { version = "0.5.0", optional = true }
 toml = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 dirs = "5.0"
 serde_json = "1.0"
+
+[features]
+default = ["clipboard"]
+clipboard = ["dep:clipboard"]

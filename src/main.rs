@@ -70,6 +70,50 @@ struct Tab {
     redo_stack: VecDeque<EditOperation>,
 }
 
+struct DummyClipboard;
+
+impl DummyClipboard {
+    fn new() -> Result<Self, Box<dyn Error>> {
+        Ok(DummyClipboard)
+    }
+
+    fn get_contents(&mut self) -> Result<String, Box<dyn Error>> {
+        Ok(String::new())
+    }
+
+    fn set_contents(&mut self, _: String) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+}
+
+enum ClipboardWrapper {
+    Real(ClipboardContext),
+    Dummy(DummyClipboard),
+}
+
+impl ClipboardWrapper {
+    fn new() -> Self {
+        match ClipboardProvider::new() {
+            Ok(clipboard) => ClipboardWrapper::Real(clipboard),
+            Err(_) => ClipboardWrapper::Dummy(DummyClipboard::new().unwrap()),
+        }
+    }
+
+    fn get_contents(&mut self) -> Result<String, Box<dyn Error>> {
+        match self {
+            ClipboardWrapper::Real(clipboard) => clipboard.get_contents().map_err(|e| e.into()),
+            ClipboardWrapper::Dummy(dummy) => dummy.get_contents(),
+        }
+    }
+
+    fn set_contents(&mut self, contents: String) -> Result<(), Box<dyn Error>> {
+        match self {
+            ClipboardWrapper::Real(clipboard) => clipboard.set_contents(contents).map_err(|e| e.into()),
+            ClipboardWrapper::Dummy(dummy) => dummy.set_contents(contents),
+        }
+    }
+}
+
 impl fmt::Display for Mode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -336,7 +380,7 @@ struct Editor {
     ts: ThemeSet,
     syntax: String,
     cursor_style: Style,
-    clipboard_context: ClipboardContext,
+    clipboard_context: ClipboardWrapper,
     visual_start: (usize, usize),
     file_selector: Option<FileSelector>,
     show_debug: bool,
@@ -364,6 +408,7 @@ impl Editor {
     fn new() -> Self {
         let keybindings = Self::load_config().unwrap_or_else(|_| Keybindings::default());
         let color_config = Self::load_color_config().unwrap_or_else(|_| ColorConfig::default());
+        let clipboard_context = ClipboardWrapper::new();
         Editor {
             content: vec![String::new()],
             cursor_position: (0, 0),
@@ -375,7 +420,7 @@ impl Editor {
             ts: ThemeSet::load_defaults(),
             syntax: "Plain Text".to_string(),
             cursor_style: Style::default().fg(Color::Yellow),
-            clipboard_context: ClipboardProvider::new().expect("Failed to initialize clipboard"),
+            clipboard_context,
             visual_start: (0, 0),
             file_selector: None,
             show_debug: false,
@@ -542,7 +587,7 @@ impl Editor {
     
         f.render_widget(minimap, area);
     }
-        
+
     fn switch_to_tab(&mut self, tab_index: usize) {
         if tab_index < self.tabs.len() {
             self.active_tab = tab_index;
@@ -1478,7 +1523,11 @@ impl Editor {
             }
         }
 
-        self.clipboard_context.set_contents(selected_text).unwrap();
+        if let Err(e) = self.clipboard_context.set_contents(selected_text) {
+            self.debug_messages.push(format!("Failed to copy to clipboard: {}", e));
+        } else {
+            self.debug_messages.push("Text copied to clipboard".to_string());
+        }
     }
 
     fn delete_selection(&mut self) {
@@ -1504,24 +1553,32 @@ impl Editor {
     }
 
     fn paste_clipboard(&mut self) {
-        if let Ok(content) = self.clipboard_context.get_contents() {
-            self.save_state();
-            let tab = &mut self.tabs[self.active_tab];
-            let lines: Vec<&str> = content.split('\n').collect();
-            if lines.len() == 1 {
-                let line = &mut tab.content[tab.cursor_position.1];
-                line.insert_str(tab.cursor_position.0, &content);
-                tab.cursor_position.0 += content.len();
-            } else {
-                let current_line = &mut tab.content[tab.cursor_position.1];
-                let rest_of_line = current_line.split_off(tab.cursor_position.0);
-                current_line.push_str(lines[0]);
-                for line in lines.iter().skip(1).take(lines.len() - 2) {
-                    tab.content.insert(tab.cursor_position.1 + 1, line.to_string());
-                    tab.cursor_position.1 += 1;
+        match self.clipboard_context.get_contents() {
+            Ok(content) => {
+
+            if let Ok(content) = self.clipboard_context.get_contents() {
+                self.save_state();
+                let tab = &mut self.tabs[self.active_tab];
+                let lines: Vec<&str> = content.split('\n').collect();
+                if lines.len() == 1 {
+                    let line = &mut tab.content[tab.cursor_position.1];
+                    line.insert_str(tab.cursor_position.0, &content);
+                    tab.cursor_position.0 += content.len();
+                } else {
+                    let current_line = &mut tab.content[tab.cursor_position.1];
+                    let rest_of_line = current_line.split_off(tab.cursor_position.0);
+                    current_line.push_str(lines[0]);
+                    for line in lines.iter().skip(1).take(lines.len() - 2) {
+                        tab.content.insert(tab.cursor_position.1 + 1, line.to_string());
+                        tab.cursor_position.1 += 1;
+                    }
+                    tab.content.insert(tab.cursor_position.1 + 1, format!("{}{}", lines.last().unwrap_or(&""), rest_of_line));
+                    tab.cursor_position = (lines.last().unwrap_or(&"").len(), tab.cursor_position.1 + 1);
+                    }
                 }
-                tab.content.insert(tab.cursor_position.1 + 1, format!("{}{}", lines.last().unwrap_or(&""), rest_of_line));
-                tab.cursor_position = (lines.last().unwrap_or(&"").len(), tab.cursor_position.1 + 1);
+            }
+            Err(e) => {
+                self.debug_messages.push(format!("Failed to paste from clipboard: {}", e));
             }
         }
     }
