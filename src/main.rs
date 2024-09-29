@@ -1,5 +1,5 @@
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseEventKind, MouseButton},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseEventKind, MouseButton, KeyEvent},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -232,11 +232,15 @@ impl Keybindings {
                 ("Ctrl+u".to_string(), "undo".to_string()),
                 ("Ctrl+r".to_string(), "redo".to_string()),
                 ("Tab".to_string(), "next_tab".to_string()),
-                ("Ctrl+1".to_string(), "switch_to_tab_1".to_string()),
-                ("Ctrl+2".to_string(), "switch_to_tab_2".to_string()),
-                ("Ctrl+3".to_string(), "switch_to_tab_3".to_string()),
-                ("Ctrl+4".to_string(), "switch_to_tab_4".to_string()),
-                ("Ctrl+5".to_string(), "switch_to_tab_5".to_string()),
+                ("F1".to_string(), "switch_to_tab_1".to_string()),
+                ("F2".to_string(), "switch_to_tab_2".to_string()),
+                ("F3".to_string(), "switch_to_tab_3".to_string()),
+                ("F4".to_string(), "switch_to_tab_4".to_string()),
+                ("F5".to_string(), "switch_to_tab_5".to_string()),
+                ("F6".to_string(), "switch_to_tab_6".to_string()),
+                ("F7".to_string(), "switch_to_tab_7".to_string()),
+                ("F8".to_string(), "switch_to_tab_8".to_string()),
+                ("F9".to_string(), "switch_to_tab_9".to_string()),
                 ("Ctrl+t".to_string(), "new_tab".to_string()),
                 ("Ctrl+w".to_string(), "close_tab".to_string()),
                 ("Ctrl+Shift+Tab".to_string(), "previous_tab".to_string()),
@@ -610,6 +614,7 @@ impl Editor {
             if self.active_tab >= self.tabs.len() {
                 self.active_tab = self.tabs.len() - 1;
             }
+            self.update_current_tab_info();
             self.update_tab_name();
         }
     }
@@ -801,7 +806,7 @@ impl Editor {
             KeyCode::BackTab => key_string.push_str("BackTab"),
             KeyCode::Insert => key_string.push_str("Insert"),
             KeyCode::Esc => key_string.push_str("Esc"),
-            _ => key_string.push_str("Unknown"),
+            _ => key_string.push_str(&format!("{:?}", key.code)),
         }
         key_string
     }
@@ -867,18 +872,7 @@ impl Editor {
                         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('q') {
                             return Ok(true);
                         }
-    
-                        if key.modifiers == KeyModifiers::CONTROL {
-                            match key.code {
-                                KeyCode::Char(c) if c >= '1' && c <= '5' => {
-                                    let tab_index = c.to_digit(10).unwrap() as usize - 1;
-                                    self.switch_to_tab(tab_index);
-                                    continue;
-                                }
-                                _ => {}
-                            }
-                        }
-    
+
                         self.debug_messages.push(format!("Key pressed: {:?}", key));
                         self.debug_messages.push(format!("Cursor: ({}, {})", self.cursor_position.0, self.cursor_position.1));
                         
@@ -952,7 +946,21 @@ impl Editor {
         (column, line)
     }
 
-    fn handle_key_event(&mut self, key: event::KeyEvent) -> io::Result<bool> {
+    fn handle_key_event(&mut self, key: KeyEvent) -> io::Result<bool> {
+        let key_str = Self::key_event_to_string(key);
+    
+        match key.code {
+            KeyCode::F(n) if n >= 1 && n <= 9 => {
+                let tab_index = n as usize - 1;
+                if tab_index < self.tabs.len() {
+                    self.switch_to_tab(tab_index);
+                    return Ok(false);
+                }
+            }
+            KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => return Ok(true),
+            _ => {}
+        }
+            
         match self.mode {
             Mode::Normal => self.handle_normal_mode(key),
             Mode::Insert => self.handle_insert_mode(key),
@@ -969,7 +977,7 @@ impl Editor {
             Mode::SidebarActive => self.handle_sidebar_active_mode(key),
         }
     }
-
+    
     fn toggle_sidebar(&mut self) -> io::Result<bool> {
         self.show_sidebar = !self.show_sidebar;
         if self.show_sidebar {
@@ -986,19 +994,8 @@ impl Editor {
         Ok(false)
     }
 
-    fn handle_normal_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
+    fn handle_normal_mode(&mut self, key: KeyEvent) -> io::Result<bool> {
         let key_str = Self::key_event_to_string(key);
-
-        if key.modifiers == KeyModifiers::CONTROL {
-            match key.code {
-                KeyCode::Char(c) if c >= '1' && c <= '5' => {
-                    let tab_index = c.to_digit(10).unwrap() as usize - 1;
-                    self.switch_to_tab(tab_index);
-                    return Ok(false);
-                }
-                _ => {}
-            }
-        }    
         
         if let Some(pending) = self.pending_key.take() {
             let combined_key = format!("{}{}", pending, key_str);
@@ -1012,6 +1009,7 @@ impl Editor {
         } else {
             if self.keybindings.normal_mode.keys().any(|k| k.starts_with(&key_str)) {
                 self.pending_key = Some(key_str);
+                Ok(false)
             } else {
                 match key.code {
                     KeyCode::Left => self.move_cursor_left(),
@@ -1032,8 +1030,8 @@ impl Editor {
                     },
                     _ => {},
                 }
+                Ok(false)
             }
-            Ok(false)
         }
     }
 
@@ -1149,6 +1147,26 @@ impl Editor {
                 self.update_current_tab_info();
                 Ok(false)
             },
+            "switch_to_tab_6" => {
+                self.switch_to_tab(5);
+                self.update_current_tab_info();
+                Ok(false)
+            },
+            "switch_to_tab_7" => {
+                self.switch_to_tab(6);
+                self.update_current_tab_info();
+                Ok(false)
+            },
+            "switch_to_tab_8" => {
+                self.switch_to_tab(7);
+                self.update_current_tab_info();
+                Ok(false)
+            },
+            "switch_to_tab_9" => {
+                self.switch_to_tab(8);
+                self.update_current_tab_info();
+                Ok(false)
+            },
             "new_tab" => {
                 self.new_tab();
                 self.update_current_tab_info();
@@ -1164,7 +1182,7 @@ impl Editor {
         }
     }
 
-    fn handle_sidebar_active_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
+    fn handle_sidebar_active_mode(&mut self, key: KeyEvent) -> io::Result<bool> {
         let key_str = Self::key_event_to_string(key);
         
         if let Some(action) = self.keybindings.normal_mode.get(&key_str) {
@@ -1192,11 +1210,12 @@ impl Editor {
         Ok(false)
     }
 
-    fn handle_insert_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
+    fn handle_insert_mode(&mut self, key: KeyEvent) -> io::Result<bool> {
         match key.code {
-            KeyCode::Esc | KeyCode::Insert => self.mode = Mode::Normal,
+            KeyCode::Esc => self.mode = Mode::Normal,
             KeyCode::Enter => self.insert_newline(),
             KeyCode::Backspace => self.backspace(),
+            KeyCode::Delete => self.delete_char(),
             KeyCode::Left => self.move_cursor_left(),
             KeyCode::Down => self.move_cursor_down(),
             KeyCode::Up => self.move_cursor_up(),
@@ -1207,7 +1226,7 @@ impl Editor {
         Ok(false)
     }
 
-    fn handle_command_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
+    fn handle_command_mode(&mut self, key: KeyEvent) -> io::Result<bool> {
         match key.code {
             KeyCode::Enter => return Ok(true),
             KeyCode::Char(c) => self.command_buffer.push(c),
@@ -1217,8 +1236,8 @@ impl Editor {
         }
         Ok(false)
     }
-
-    fn handle_visual_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
+    
+    fn handle_visual_mode(&mut self, key: KeyEvent) -> io::Result<bool> {
         match key.code {
             KeyCode::Esc => self.mode = Mode::Normal,
             KeyCode::Left => self.move_cursor_left(),
@@ -1237,8 +1256,8 @@ impl Editor {
         }
         Ok(false)
     }
-
-    fn handle_file_select_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
+    
+    fn handle_file_select_mode(&mut self, key: KeyEvent) -> io::Result<bool> {
         if let Some(file_selector) = &mut self.file_selector {
             match key.code {
                 KeyCode::Up => file_selector.up(),
@@ -1259,30 +1278,50 @@ impl Editor {
         }
         Ok(false)
     }
-
+    
     fn execute_command(&mut self) -> io::Result<bool> {
         let command = self.command_buffer.clone();
         self.mode = Mode::Normal;
         self.command_buffer.clear();
 
         match command.as_str() {
-            "q" => return Ok(true),
-            "w" => self.save_file(None)?,
+            "q" => {
+                if self.tabs.len() > 1 {
+                    self.close_tab();
+                    Ok(false)
+                } else {
+                    Ok(true)
+                }
+            }
+            "w" => {
+                self.save_file(None)?;
+                Ok(false)
+            }
             cmd if cmd.starts_with("w ") => {
                 let filename = cmd.split_whitespace().nth(1).unwrap();
                 self.save_file(Some(Path::new(filename)))?;
+                Ok(false)
             }
             "wq" => {
                 self.save_file(None)?;
-                return Ok(true);
+                if self.tabs.len() > 1 {
+                    self.close_tab();
+                    Ok(false)
+                } else {
+                    Ok(true)
+                }
             }
+
             cmd if cmd.starts_with("e ") => {
                 let filename = cmd.split_whitespace().nth(1).unwrap();
                 self.open_file(Path::new(filename))?;
+                Ok(false)
             }
-            _ => self.debug_messages.push(format!("Unknown command: {}", command)),
+            _ => {
+                self.debug_messages.push(format!("Unknown command: {}", command));
+                Ok(false)
+            }                
         }
-        Ok(false)
     }
 
     fn move_cursor_up(&mut self) {
@@ -1592,7 +1631,11 @@ impl Editor {
         } else {
             return Err(io::Error::new(io::ErrorKind::Other, "No filename specified. Use :w <filename> to save."));
         };
-
+    
+        if let Some(parent) = filename.parent() {
+            fs::create_dir_all(parent)?;
+        }
+    
         let mut file = fs::File::create(&filename)?;
         for line in &tab.content {
             writeln!(file, "{}", line)?;
@@ -1604,7 +1647,14 @@ impl Editor {
     }
 
     fn open_file(&mut self, path: &Path) -> io::Result<()> {
-        let new_tab = Tab::from_file(path, &self.ps)?;
+        let new_tab = if path.exists() {
+            Tab::from_file(path, &self.ps)?
+        } else {
+            let mut tab = Tab::new();
+            tab.current_file = Some(path.to_string_lossy().into_owned());
+            tab
+        };
+    
         if self.tabs.len() == 1 && self.tabs[0].content == vec![String::new()] && self.tabs[0].current_file.is_none() {
             self.tabs[0] = new_tab;
             self.active_tab = 0;
@@ -1613,8 +1663,14 @@ impl Editor {
             self.active_tab = self.tabs.len() - 1;
         }
         
-        self.tabs[self.active_tab].current_file = Some(path.to_string_lossy().into_owned());
         self.update_tab_name();
+        
+        if path.exists() {
+            self.debug_messages.push(format!("File opened: {}", path.display()));
+        } else {
+            self.debug_messages.push(format!("New file: {} (not yet saved)", path.display()));
+        }
+        
         Ok(())
     }
 
@@ -1943,7 +1999,7 @@ impl Editor {
         }
     }
 
-    fn handle_search_mode(&mut self, key: event::KeyEvent) -> io::Result<bool> {
+    fn handle_search_mode(&mut self, key: KeyEvent) -> io::Result<bool> {
         match key.code {
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
@@ -1962,7 +2018,7 @@ impl Editor {
         }
         Ok(false)
     }
-
+    
     fn adjust_horizontal_scroll(&mut self) {
         let editor_width = self.get_editor_width();
         let tab = &mut self.tabs[self.active_tab];
