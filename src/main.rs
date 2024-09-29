@@ -37,6 +37,16 @@ struct ColorConfig {
     function: String,
     number: String,
     minimap_highlight: String,
+    minimap_background: String,
+    minimap_content: String,
+    minimap_border: String,
+    tab_active: String,
+    tab_inactive: String,
+    tab_background: String,
+    file_selector_background: String,
+    file_selector_foreground: String,
+    file_selector_highlight: String,
+    file_selector_border: String,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -187,15 +197,25 @@ impl ColorConfig {
     fn default() -> Self {
         ColorConfig {
             background: "#1E1E1E".to_string(),
-            foreground: "#FFFFFF".to_string(),
+            foreground: "#CCCCCC".to_string(),
             cursor: "#FFFFFF".to_string(),
             selection: "#264F78".to_string(),
-            comment: "#6A9955".to_string(),
-            keyword: "#569CD6".to_string(),
-            string: "#CE9178".to_string(),
-            function: "#DCDCAA".to_string(),
-            number: "#B5CEA8".to_string(),
-            minimap_highlight: "#3E3E3E".to_string(),
+            comment: "#7F848E".to_string(),
+            keyword: "#61AFEF".to_string(),
+            string: "#C678DD".to_string(),
+            function: "#E5C07B".to_string(),
+            number: "#D19A66".to_string(),
+            minimap_highlight: "#264F78".to_string(),
+            minimap_background: "#1E1E1E".to_string(),
+            minimap_content: "#404040".to_string(),
+            minimap_border: "#404040".to_string(),
+            tab_active: "#61AFEF".to_string(),
+            tab_inactive: "#7F848E".to_string(),
+            tab_background: "#252526".to_string(),
+            file_selector_background: "#2C2C2C".to_string(),
+            file_selector_foreground: "#CCCCCC".to_string(),
+            file_selector_highlight: "#3A3D41".to_string(),
+            file_selector_border: "#4A4A4A".to_string(),
         }
     }
 
@@ -340,7 +360,7 @@ impl FileSelector {
         }
     }
 
-    fn render<B: tui::backend::Backend>(&self, f: &mut Frame<B>, area: Rect) {
+    fn render<B: tui::backend::Backend>(&self, f: &mut Frame<B>, area: Rect, color_config: &ColorConfig) {
         let items: Vec<ListItem> = self.entries
             .iter()
             .enumerate()
@@ -351,20 +371,41 @@ impl FileSelector {
                     path.file_name().unwrap_or_default().to_string_lossy().into_owned()
                 };
                 
-                if path.is_dir() {
-                    ListItem::new(format!("📁 {}", name))
+                let icon = if path.is_dir() {
+                    "📁"
                 } else {
-                    ListItem::new(format!("📄 {}", name))
-                }
+                    match path.extension().and_then(|s| s.to_str()) {
+                        Some("rs") => "🦀",
+                        Some("js") => "🟨",
+                        Some("py") => "🐍",
+                        Some("html") => "🌐",
+                        Some("css") => "🎨",
+                        Some("json") => "📊",
+                        Some("md") => "📝",
+                        Some("txt") => "📄",
+                        Some("pdf") => "📕",
+                        Some("jpg") | Some("jpeg") | Some("png") | Some("gif") => "🖼️",
+                        Some("mp3") | Some("wav") | Some("ogg") => "🎵",
+                        Some("mp4") | Some("avi") | Some("mov") => "🎬",
+                        Some("zip") | Some("tar") | Some("gz") => "🗜️",
+                        Some("exe") | Some("msi") => "⚙️",
+                        _ => "📄",
+                    }
+                };
+                
+                ListItem::new(format!("{} {}", icon, name))
             })
             .collect();
 
         let list = List::new(items)
-            .block(Block::default().title("File Selector").borders(Borders::ALL))
+            .block(Block::default().title("File Selector").borders(Borders::ALL)
+                .border_style(Style::default().fg(Editor::parse_color(&color_config.file_selector_border))))
+            .style(Style::default()
+                .bg(Editor::parse_color(&color_config.file_selector_background))
+                .fg(Editor::parse_color(&color_config.file_selector_foreground)))
             .highlight_style(
                 Style::default()
-                    .bg(Color::Yellow)
-                    .fg(Color::Black)
+                    .bg(Editor::parse_color(&color_config.file_selector_highlight))
                     .add_modifier(Modifier::BOLD),
             );
 
@@ -513,7 +554,9 @@ impl Editor {
         if content.is_empty() {
             let empty_minimap = Paragraph::new("No content")
                 .block(Block::default().borders(Borders::ALL).title("Minimap"))
-                .style(Style::default().bg(Color::Black).fg(Color::White));
+                .style(Style::default()
+                    .bg(Self::parse_color(&self.color_config.minimap_background))
+                    .fg(Self::parse_color(&self.color_config.minimap_content)));
             f.render_widget(empty_minimap, area);
             return;
         }
@@ -524,9 +567,9 @@ impl Editor {
     
         let scale_y = (total_lines as f32 / minimap_height as f32).max(1.0);
         let scale_x = 4;
-                
-        let background_color = Self::parse_color(&self.color_config.background);
-        let foreground_color = Self::parse_color(&self.color_config.foreground);
+    
+        let background_color = Self::parse_color(&self.color_config.minimap_background);
+        let foreground_color = Self::parse_color(&self.color_config.minimap_content);
         let comment_color = Self::parse_color(&self.color_config.comment);
         let keyword_color = Self::parse_color(&self.color_config.keyword);
         let string_color = Self::parse_color(&self.color_config.string);
@@ -557,7 +600,7 @@ impl Editor {
                         }
                     }
                 }
-
+    
                 let color = match dot_count {
                     0 => background_color,
                     1..=2 => comment_color,
@@ -572,7 +615,7 @@ impl Editor {
                 } else {
                     Style::default().fg(color)
                 };
-
+    
                 line_spans.push(Span::styled(
                     char::from_u32(braille_char).unwrap().to_string(),
                     style
@@ -580,14 +623,17 @@ impl Editor {
             }
             minimap_content.push(Spans::from(line_spans));
             line_mapping.push((min_line, max_line));
-            }
-            
-            let minimap = Paragraph::new(minimap_content)
-            .block(Block::default().borders(Borders::ALL).title("Minimap"))
+        }
+    
+        let minimap = Paragraph::new(minimap_content)
+            .block(Block::default()
+                .borders(Borders::ALL)
+                .title("Minimap")
+                .border_style(Style::default().fg(Self::parse_color(&self.color_config.minimap_border))))
             .style(Style::default().bg(background_color));
-
+    
         f.render_widget(minimap, area);
-
+    
         self.minimap_line_mapping = line_mapping;
     }
 
@@ -1722,7 +1768,7 @@ impl Editor {
                     
         if self.show_sidebar {
             if let Some(file_selector) = &self.file_selector {
-                file_selector.render(f, main_layout[current_layout_index]);
+                file_selector.render(f, main_layout[current_layout_index], &self.color_config);
             }
             current_layout_index += 1;
         }
@@ -1752,33 +1798,33 @@ impl Editor {
             )
             .split(editor_area);
         
-        let tab_titles: Vec<Spans> = self.tabs.iter().enumerate().map(|(i, tab)| {
-            let title = tab.current_file.as_ref()
-                .and_then(|f| Path::new(f).file_name())
-                .and_then(|f| f.to_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| format!("Untitled-{}", i + 1));
-    
-            let style = if i == self.active_tab {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
-            };
-            Spans::from(vec![
-                Span::styled(format!(" {} ", i + 1), style),
-                Span::styled(title, style),
-                Span::raw(" "),
-            ])
-        }).collect();
-    
+            let tab_titles: Vec<Spans> = self.tabs.iter().enumerate().map(|(i, tab)| {
+                let title = tab.current_file.as_ref()
+                    .and_then(|f| Path::new(f).file_name())
+                    .and_then(|f| f.to_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| format!("Untitled-{}", i + 1));
+        
+                let style = if i == self.active_tab {
+                    Style::default().fg(Self::parse_color(&self.color_config.tab_active))
+                } else {
+                    Style::default().fg(Self::parse_color(&self.color_config.tab_inactive))
+                };
+                Spans::from(vec![
+                    Span::styled(format!(" {} ", i + 1), style),
+                    Span::styled(title, style),
+                    Span::raw(" "),
+                ])
+            }).collect();
+        
         let tab_bar = Tabs::new(tab_titles)
             .block(Block::default().borders(Borders::ALL).title("Tabs"))
             .select(self.active_tab)
-            .style(Style::default().fg(Color::White))
-            .highlight_style(Style::default().fg(Color::Yellow));
+            .style(Style::default().bg(Self::parse_color(&self.color_config.tab_background)))
+            .highlight_style(Style::default().fg(Self::parse_color(&self.color_config.tab_active)));
     
         f.render_widget(tab_bar, editor_layout[0]);
-    
+
         let mode_indicator = match self.mode {
             Mode::Normal => "NORMAL",
             Mode::Insert => "INSERT",
