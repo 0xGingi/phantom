@@ -427,7 +427,7 @@ dependencies = [
 
 [[package]]
 name = "phantom"
-version = "0.6.3"
+version = "0.7.0"
 dependencies = [
  "clipboard",
  "crossterm 0.26.1",
