@@ -36,6 +36,7 @@ struct ColorConfig {
     string: String,
     function: String,
     number: String,
+    minimap_highlight: String,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -194,6 +195,7 @@ impl ColorConfig {
             string: "#CE9178".to_string(),
             function: "#DCDCAA".to_string(),
             number: "#B5CEA8".to_string(),
+            minimap_highlight: "#3E3E3E".to_string(),
         }
     }
 
@@ -403,6 +405,7 @@ struct Editor {
     mouse_selection_end: Option<(usize, usize)>,
     show_minimap: bool,
     minimap_width: u16,
+    minimap_line_mapping: Vec<(usize, usize)>,
 }
 
 impl Editor {
@@ -441,6 +444,50 @@ impl Editor {
             mouse_selection_end: None,
             show_minimap: false,
             minimap_width: 30,
+            minimap_line_mapping: Vec::new(),
+        }
+    }
+
+    fn is_minimap_area(&self, x: u16, y: u16) -> bool {
+        let minimap_x = self.get_editor_width() as u16;
+        let minimap_width = self.minimap_width;
+        let minimap_y = 1;
+        let minimap_height = self.minimap_line_mapping.len() as u16 + 1;
+    
+        x >= minimap_x && x < minimap_x + minimap_width && y >= minimap_y && y < minimap_y + minimap_height
+    }
+
+    fn handle_minimap_click(&mut self, _x: u16, y: u16) {
+        let total_lines = self.tabs[self.active_tab].content.len();
+    
+        let adjusted_y = y.saturating_sub(1) as usize;
+    
+        if adjusted_y >= self.minimap_line_mapping.len() {
+            return;
+        }
+    
+        let (min_line, max_line) = self.minimap_line_mapping[adjusted_y];
+        let clicked_line = (min_line + max_line) / 2;
+    
+        let new_cursor_line = clicked_line.min(total_lines.saturating_sub(1));
+        let editor_height = self.get_editor_height();
+        let new_scroll_offset = new_cursor_line.saturating_sub(editor_height / 2);
+    
+        let tab = &mut self.tabs[self.active_tab];
+        tab.cursor_position.1 = new_cursor_line;
+        tab.scroll_offset = new_scroll_offset;
+    
+        self.ensure_cursor_visible();
+    }
+
+    fn ensure_cursor_visible(&mut self) {
+        let editor_height = self.get_editor_height();
+        let tab = &mut self.tabs[self.active_tab];
+
+        if tab.cursor_position.1 < tab.scroll_offset {
+            tab.scroll_offset = tab.cursor_position.1;
+        } else if tab.cursor_position.1 >= tab.scroll_offset + editor_height {
+            tab.scroll_offset = tab.cursor_position.1 - editor_height + 1;
         }
     }
 
@@ -472,39 +519,45 @@ impl Editor {
         }
     
         let total_lines = content.len();
-        let minimap_height = (area.height as usize).saturating_sub(2) * 4;
-        let minimap_width = (area.width as usize).saturating_sub(2) * 2;
+        let minimap_height = area.height as usize - 2;
+        let minimap_width = (area.width as usize - 2) * 2;
     
-        let scale_y = (total_lines as f32 / minimap_height as f32).ceil() as usize;
+        let scale_y = (total_lines as f32 / minimap_height as f32).max(1.0);
         let scale_x = 4;
-    
+                
         let background_color = Self::parse_color(&self.color_config.background);
         let foreground_color = Self::parse_color(&self.color_config.foreground);
         let comment_color = Self::parse_color(&self.color_config.comment);
         let keyword_color = Self::parse_color(&self.color_config.keyword);
         let string_color = Self::parse_color(&self.color_config.string);
         let function_color = Self::parse_color(&self.color_config.function);
+        let minimap_highlight_color = Self::parse_color(&self.color_config.minimap_highlight);
     
+        let current_line = tab.cursor_position.1;
         let mut minimap_content = Vec::new();
+        let mut line_mapping = Vec::new();
     
-        for y in (0..minimap_height).step_by(4) {
+        for y in 0..minimap_height {
             let mut line_spans = Vec::new();
+            let min_line = (y as f32 * scale_y) as usize;
+            let max_line = ((y + 1) as f32 * scale_y).min(total_lines as f32) as usize - 1;
+    
             for x in (0..minimap_width).step_by(2) {
                 let mut braille_char = 0x2800;
                 let mut dot_count = 0;
     
                 for dy in 0..4 {
                     for dx in 0..2 {
-                        let content_y = (y + dy) * scale_y;
-                        let content_x = (x + dx) * scale_x;
+                        let content_y = (min_line + dy).min(total_lines - 1);
+                        let content_x = x / 2 * scale_x + dx;
     
-                        if content_y < total_lines && content_x < content[content_y].len() {
+                        if content_x < content[content_y].len() {
                             braille_char |= 1 << (dy + 4 * dx);
                             dot_count += 1;
                         }
                     }
                 }
-    
+
                 let color = match dot_count {
                     0 => background_color,
                     1..=2 => comment_color,
@@ -514,19 +567,28 @@ impl Editor {
                     _ => foreground_color,
                 };
     
+                let style = if current_line >= min_line && current_line <= max_line {
+                    Style::default().fg(color).bg(minimap_highlight_color)
+                } else {
+                    Style::default().fg(color)
+                };
+
                 line_spans.push(Span::styled(
                     char::from_u32(braille_char).unwrap().to_string(),
-                    Style::default().fg(color)
+                    style
                 ));
             }
             minimap_content.push(Spans::from(line_spans));
-        }
-    
-        let minimap = Paragraph::new(minimap_content)
+            line_mapping.push((min_line, max_line));
+            }
+            
+            let minimap = Paragraph::new(minimap_content)
             .block(Block::default().borders(Borders::ALL).title("Minimap"))
             .style(Style::default().bg(background_color));
-    
+
         f.render_widget(minimap, area);
+
+        self.minimap_line_mapping = line_mapping;
     }
 
     fn switch_to_tab(&mut self, tab_index: usize) {
@@ -791,8 +853,13 @@ impl Editor {
                     Event::Mouse(mouse_event) => {
                         match mouse_event.kind {
                             MouseEventKind::Down(MouseButton::Left) => {
-                                let (x, y) = (mouse_event.column as usize, mouse_event.row as usize);
-                                self.start_mouse_selection(x, y);
+                                let (x, y) = (mouse_event.column, mouse_event.row);
+                                if self.is_minimap_area(x, y) {
+                                    self.handle_minimap_click(x, y);
+                                } else {
+                                    let (x, y) = (mouse_event.column as usize, mouse_event.row as usize);
+                                    self.start_mouse_selection(x, y);
+                                }
                             }
                             MouseEventKind::Drag(MouseButton::Left) => {
                                 let (x, y) = (mouse_event.column as usize, mouse_event.row as usize);
@@ -1892,7 +1959,18 @@ impl Editor {
 
         if self.show_minimap && !self.tabs[self.active_tab].content.is_empty() && current_layout_index < main_layout.len() {
             self.render_minimap(f, main_layout[current_layout_index]);
-        }    
+        }
+        
+        if self.show_minimap {
+            let minimap_area = Rect::new(
+                editor_area.right(),
+                editor_area.top(),
+                self.minimap_width,
+                editor_area.height
+            );
+            self.render_minimap(f, minimap_area);
+        }
+    
     }
 
     fn enter_search_mode(&mut self) {
