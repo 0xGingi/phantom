@@ -15,7 +15,6 @@ use tui::{
     style::{Color, Modifier, Style},
     text::{Span, Spans},
     widgets::{Block, Borders, Paragraph, List, ListItem, ListState, Tabs},
-    text::{Text},
     Frame, Terminal,
 };
 use syntect::easy::HighlightLines;
@@ -394,8 +393,6 @@ struct Editor {
     scroll_offset: usize,
     horizontal_scroll: usize,
     keybindings: Keybindings,
-    undo_stack: VecDeque<EditOperation>,
-    redo_stack: VecDeque<EditOperation>,
     color_config: ColorConfig,
     show_sidebar: bool,
     sidebar_width: u16,
@@ -434,8 +431,6 @@ impl Editor {
             scroll_offset: 0,
             horizontal_scroll: 0,
             keybindings,
-            undo_stack: VecDeque::new(),
-            redo_stack: VecDeque::new(),
             color_config,
             show_sidebar: false,
             sidebar_width: 30,
@@ -448,64 +443,6 @@ impl Editor {
             minimap_width: 30,
         }
     }
-
-    fn render_sidebar<B: tui::backend::Backend>(&self, f: &mut Frame<B>, area: Rect) {
-        let items: Vec<ListItem> = self.tabs
-            .iter()
-            .enumerate()
-            .map(|(i, tab)| {
-                let title = tab.current_file.as_ref()
-                    .map(|path| {
-                        std::path::Path::new(path)
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or(path)
-                    })
-                    .unwrap_or("Untitled");
-                ListItem::new(format!("{}: {}", i + 1, title))
-            })
-            .collect();
-
-        let list = List::new(items)
-            .block(Block::default().title("Open Files").borders(Borders::ALL))
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD))
-            .highlight_symbol("> ");
-
-        f.render_widget(list, area);
-    }
-
-
-    fn enter_file_select_mode(&mut self) -> io::Result<()> {
-        let current_dir = if let Some(ref file) = self.current_file {
-            Path::new(file).parent().unwrap_or(Path::new(".")).to_path_buf()
-        } else {
-            env::current_dir()?
-        };
-        self.file_selector = Some(FileSelector::new(&current_dir)?);
-        self.mode = Mode::FileSelect;
-        Ok(())
-    }
-
-    fn render_editor_content<B: tui::backend::Backend>(&self, f: &mut Frame<B>, area: Rect) {
-        let tab = &self.tabs[self.active_tab];
-        let content = tab.content.iter()
-            .skip(tab.scroll_offset)
-            .take(area.height as usize)
-            .map(|line| {
-                let trimmed_line = if line.len() > tab.horizontal_scroll {
-                    &line[tab.horizontal_scroll..]
-                } else {
-                    ""
-                };
-                Spans::from(trimmed_line)
-            })
-            .collect::<Vec<Spans>>();
-
-        let paragraph = Paragraph::new(content)
-            .block(Block::default().borders(Borders::ALL).title("Editor"));
-        f.render_widget(paragraph, area);
-    }
-
 
     fn toggle_minimap(&mut self) -> io::Result<bool> {
         if !self.show_minimap {
@@ -622,7 +559,7 @@ impl Editor {
     fn update_tab_name(&mut self) {
         let tab = &mut self.tabs[self.active_tab];
         if let Some(path) = &tab.current_file {
-            let file_name = Path::new(path).file_name().unwrap().to_str().unwrap().to_string();
+            let _file_name = Path::new(path).file_name().unwrap().to_str().unwrap().to_string();
         }
     }
 
@@ -947,7 +884,7 @@ impl Editor {
     }
 
     fn handle_key_event(&mut self, key: KeyEvent) -> io::Result<bool> {
-        let key_str = Self::key_event_to_string(key);
+        let _key_str = Self::key_event_to_string(key);
     
         match key.code {
             KeyCode::F(n) if n >= 1 && n <= 9 => {
@@ -1593,7 +1530,7 @@ impl Editor {
 
     fn paste_clipboard(&mut self) {
         match self.clipboard_context.get_contents() {
-            Ok(content) => {
+            Ok(_content) => {
 
             if let Ok(content) = self.clipboard_context.get_contents() {
                 self.save_state();
@@ -2018,18 +1955,6 @@ impl Editor {
         }
         Ok(false)
     }
-    
-    fn adjust_horizontal_scroll(&mut self) {
-        let editor_width = self.get_editor_width();
-        let tab = &mut self.tabs[self.active_tab];
-        if tab.cursor_position.0 < tab.horizontal_scroll {
-            tab.horizontal_scroll = tab.cursor_position.0;
-        } else if tab.cursor_position.0 >= tab.horizontal_scroll + editor_width {
-            tab.horizontal_scroll = tab.cursor_position.0 - editor_width + 1;
-        }
-    }
-
-
 
     fn get_editor_width(&self) -> usize {
         80
