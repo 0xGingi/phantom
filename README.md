@@ -20,6 +20,24 @@ phantom is a lightweight, terminal-based text editor written in Rust. It combine
 
 ## Installation
 
+### Arch User Repository
+
+#### Binary
+
+[![binary](https://img.shields.io/aur/version/phantom-editor-bin)](https://aur.archlinux.org/packages/phantom-editor-bin)
+
+#### Git
+
+[![git](https://img.shields.io/aur/version/phantom-editor-git)](https://aur.archlinux.org/packages/phantom-editor-git)
+
+### Binary Release
+
+Download latest phantom executable from [releases](https://github.com/0xGingi/phantom/releases)
+
+Place executable in /usr/bin
+
+### Build From Source
+
 1. Ensure you have Rust and Cargo installed on your system. If not, install them from [https://www.rust-lang.org/](https://www.rust-lang.org/).
 
 2. Clone this repository:
