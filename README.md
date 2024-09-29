@@ -34,7 +34,7 @@ phantom is a lightweight, terminal-based text editor written in Rust. It combine
 
 Download latest phantom executable from [releases](https://github.com/0xGingi/phantom/releases)
 
-Place executable in /usr/bin
+Place executable in /usr/bin (or in any folder in your path)
 
 ### Build From Source
 
