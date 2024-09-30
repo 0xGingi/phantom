@@ -20,10 +20,11 @@ use tui::{
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{ThemeSet, Style as SyntectStyle};
 use syntect::parsing::SyntaxSet;
-use clipboard::{ClipboardContext, ClipboardProvider};
+use copypasta::{ClipboardContext, ClipboardProvider};
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use dirs;
 
 #[derive(Deserialize, Serialize, Clone)]
 struct ColorConfig {
@@ -80,46 +81,32 @@ struct Tab {
     redo_stack: VecDeque<EditOperation>,
 }
 
-struct DummyClipboard;
-
-impl DummyClipboard {
-    fn new() -> Result<Self, Box<dyn Error>> {
-        Ok(DummyClipboard)
-    }
-
-    fn get_contents(&mut self) -> Result<String, Box<dyn Error>> {
-        Ok(String::new())
-    }
-
-    fn set_contents(&mut self, _: String) -> Result<(), Box<dyn Error>> {
-        Ok(())
-    }
-}
-
 enum ClipboardWrapper {
     Real(ClipboardContext),
-    Dummy(DummyClipboard),
+    Dummy,
 }
 
 impl ClipboardWrapper {
     fn new() -> Self {
-        match ClipboardProvider::new() {
+        match ClipboardContext::new() {
             Ok(clipboard) => ClipboardWrapper::Real(clipboard),
-            Err(_) => ClipboardWrapper::Dummy(DummyClipboard::new().unwrap()),
+            Err(_) => ClipboardWrapper::Dummy,
+        }
+    }
+}
+
+impl ClipboardProvider for ClipboardWrapper {
+    fn get_contents(&mut self) -> Result<String, Box<dyn Error + Send + Sync>> {
+        match self {
+            ClipboardWrapper::Real(clipboard) => clipboard.get_contents(),
+            ClipboardWrapper::Dummy => Ok(String::new()),
         }
     }
 
-    fn get_contents(&mut self) -> Result<String, Box<dyn Error>> {
+    fn set_contents(&mut self, contents: String) -> Result<(), Box<dyn Error + Send + Sync>> {
         match self {
-            ClipboardWrapper::Real(clipboard) => clipboard.get_contents().map_err(|e| e.into()),
-            ClipboardWrapper::Dummy(dummy) => dummy.get_contents(),
-        }
-    }
-
-    fn set_contents(&mut self, contents: String) -> Result<(), Box<dyn Error>> {
-        match self {
-            ClipboardWrapper::Real(clipboard) => clipboard.set_contents(contents).map_err(|e| e.into()),
-            ClipboardWrapper::Dummy(dummy) => dummy.set_contents(contents),
+            ClipboardWrapper::Real(clipboard) => clipboard.set_contents(contents),
+            ClipboardWrapper::Dummy => Ok(()),
         }
     }
 }
@@ -727,11 +714,14 @@ impl Editor {
         }
     }
     
+    fn get_config_dir() -> Option<PathBuf> {
+        let mut config_dir = dirs::config_dir()?;
+        config_dir.push("phantom");
+        Some(config_dir)
+    }    
+
     fn load_color_config() -> Result<ColorConfig, Box<dyn Error>> {
-        let config_dir = dirs::home_dir()
-            .ok_or("Could not find home directory")?
-            .join(".config")
-            .join("phantom");
+        let config_dir = Self::get_config_dir().ok_or("Could not find config directory")?;
         let config_path = config_dir.join("colors.json");
     
         if !config_path.exists() {
@@ -742,7 +732,7 @@ impl Editor {
         let config = ColorConfig::from_json(&config_str)?;
         Ok(config)
     }
-
+    
     fn create_default_color_config(config_path: &PathBuf) -> Result<(), Box<dyn Error>> {
         if let Some(parent) = config_path.parent() {
             fs::create_dir_all(parent)?;
@@ -752,7 +742,7 @@ impl Editor {
         fs::write(config_path, default_config)?;
         Ok(())
     }
-
+    
     fn save_state(&mut self) {
         let tab_index = self.active_tab;
         let tab = &mut self.tabs[tab_index];
@@ -807,10 +797,7 @@ impl Editor {
     }
 
     fn load_config() -> Result<Keybindings, Box<dyn Error>> {
-        let config_dir = dirs::home_dir()
-            .ok_or("Could not find home directory")?
-            .join(".config")
-            .join("phantom");
+        let config_dir = Self::get_config_dir().ok_or("Could not find config directory")?;
         let config_path = config_dir.join("config.toml");
     
         if !config_path.exists() {
@@ -821,7 +808,7 @@ impl Editor {
         let config: Keybindings = toml::from_str(&config_str)?;
         Ok(config)
     }
-        
+            
     fn key_event_to_string(key: event::KeyEvent) -> String {
         let mut key_string = String::new();
         if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -865,7 +852,7 @@ impl Editor {
         fs::write(config_path, default_config)?;
         Ok(())
     }
-    
+
     fn run(&mut self) -> Result<(), Box<dyn Error>> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();

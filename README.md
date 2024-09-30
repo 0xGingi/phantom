@@ -17,6 +17,13 @@ phantom is a lightweight, terminal-based text editor written in Rust. It combine
 - Undo and Redo
 - Tabs
 - Minimap
+- Cross-Plaform?
+
+## Cross-Plaform Status
+
+- Linux: 100%
+- MacOS: Untested - Please Test for me!
+- Windows: 75% (Opens and base functionality works, but issues with file navigation and some keybinds)
 
 ## Installation
 
@@ -61,9 +68,9 @@ Place executable in /usr/bin (or in any folder in your path)
 
 To start phantom:
 ```
-./phantom
-./phantom file.txt
-./phantom ~/Project
+phantom
+phantom file.txt
+phantom ~/Project
 ```
 
 If a filename is provided, phantom will attempt to open that file. Otherwise, it will start with a blank document.
@@ -71,10 +78,11 @@ If a directory is provided, phantom will enter directory navigation mode
 
 ## Default Keybinds and Commands
 
-### ~/.config/phantom/config.toml - Keybinds
-### ~/.config/phantom/colors.json - Colors
+### Config file locations
 
-You can change the keybinds in the config file and the colors in the colors file.
+- Linux: `~/.config/phantom`
+- Windows: `%APPDATA%\phantom`
+- MacOS: `~/Library/Application Support/phantom`
 
 ### Global
 
