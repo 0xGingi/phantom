@@ -520,17 +520,28 @@ impl Editor {
     }
 
     fn toggle_minimap(&mut self) -> io::Result<bool> {
-        if !self.show_minimap {
-            if !self.tabs[self.active_tab].content.iter().all(|line| line.is_empty()) {
-                self.show_minimap = true;
-                self.debug_messages.push("Minimap shown".to_string());
-            } else {
+        self.show_minimap = !self.show_minimap;
+        let status = if self.show_minimap { "shown" } else { "hidden" };
+        
+        self.debug_messages.push(format!("Minimap toggle attempted. New state: {}", status));
+        
+        if self.show_minimap {
+            if self.tabs[self.active_tab].content.iter().all(|line| line.is_empty()) {
+                self.show_minimap = false;
                 self.debug_messages.push("Cannot show minimap: No content".to_string());
+            } else {
+                self.debug_messages.push(format!("Minimap {} (content available)", status));
             }
         } else {
-            self.show_minimap = false;
-            self.debug_messages.push("Minimap hidden".to_string());
+            self.debug_messages.push(format!("Minimap {}", status));
         }
+        
+        if let Ok((width, height)) = crossterm::terminal::size() {
+            self.debug_messages.push(format!("Terminal size: {}x{}", width, height));
+        } else {
+            self.debug_messages.push("Failed to get terminal size".to_string());
+        }
+        
         Ok(false)
     }
 
@@ -821,7 +832,13 @@ impl Editor {
             key_string.push_str("Shift+");
         }
         match key.code {
-            KeyCode::Char(c) => key_string.push(c),
+            KeyCode::Char(c) => {
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    key_string.push(c.to_ascii_lowercase());
+                } else {
+                    key_string.push(c);
+                }
+            },
             KeyCode::F(n) => key_string.push_str(&format!("F{}", n)),
             KeyCode::Enter => key_string.push_str("Enter"),
             KeyCode::Left => key_string.push_str("Left"),
@@ -985,7 +1002,12 @@ impl Editor {
 
     fn handle_key_event(&mut self, key: KeyEvent) -> io::Result<bool> {
         let _key_str = Self::key_event_to_string(key);
-    
+        
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('m') {
+            self.debug_messages.push("Ctrl+M detected, toggling minimap".to_string());
+            return self.toggle_minimap();
+        }
+
         match key.code {
             KeyCode::F(n) if n >= 1 && n <= 9 => {
                 let tab_index = n as usize - 1;
