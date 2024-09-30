@@ -22,7 +22,7 @@ phantom is a lightweight, terminal-based text editor written in Rust. It combine
 ## Cross-Plaform Status
 
 - Linux: 100%
-- MacOS: Untested - Please Test for me!
+- MacOS: 80% (Some keybinds do not work and colors are fucked)
 - Windows: 75% (Opens and base functionality works, but issues with file navigation and some keybinds)
 
 ## Installation
