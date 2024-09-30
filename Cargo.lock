@@ -567,7 +567,7 @@ dependencies = [
 
 [[package]]
 name = "phantom"
-version = "0.7.8"
+version = "0.7.9"
 dependencies = [
  "copypasta",
  "crossterm 0.28.1",
