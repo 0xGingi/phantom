@@ -253,6 +253,7 @@ impl Keybindings {
                 ("Ctrl+w".to_string(), "close_tab".to_string()),
                 ("Ctrl+Shift+Tab".to_string(), "previous_tab".to_string()),
                 ("Ctrl+m".to_string(), "toggle_minimap".to_string()),
+                ("Cmd+M".to_string(), "toggle_minimap".to_string()),
             ].iter().cloned().collect(),
             insert_mode: [
                 ("Esc".to_string(), "exit_insert_mode".to_string()),
@@ -831,10 +832,13 @@ impl Editor {
         if key.modifiers.contains(KeyModifiers::SHIFT) {
             key_string.push_str("Shift+");
         }
+        if key.modifiers.contains(KeyModifiers::SUPER) {
+            key_string.push_str("Cmd+");
+        }    
         match key.code {
             KeyCode::Char(c) => {
-                if key.modifiers.contains(KeyModifiers::CONTROL) {
-                    key_string.push(c.to_ascii_lowercase());
+                if key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::SUPER) {
+                    key_string.push(c.to_ascii_uppercase());
                 } else {
                     key_string.push(c);
                 }
@@ -1003,8 +1007,10 @@ impl Editor {
     fn handle_key_event(&mut self, key: KeyEvent) -> io::Result<bool> {
         let _key_str = Self::key_event_to_string(key);
         
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('m') {
-            self.debug_messages.push("Ctrl+M detected, toggling minimap".to_string());
+        if (key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::SUPER))
+        && (key.code == KeyCode::Char('m') || key.code == KeyCode::Char('M'))
+        {
+            self.debug_messages.push("Ctrl+M or Cmd+M detected, toggling minimap".to_string());
             return self.toggle_minimap();
         }
 
