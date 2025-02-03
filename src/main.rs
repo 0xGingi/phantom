@@ -253,14 +253,33 @@ impl Keybindings {
                 ("Ctrl+w".to_string(), "close_tab".to_string()),
                 ("Ctrl+Shift+Tab".to_string(), "previous_tab".to_string()),
                 ("Ctrl+m".to_string(), "toggle_minimap".to_string()),
+                ("Left".to_string(), "move_cursor_left".to_string()),
+                ("Down".to_string(), "move_cursor_down".to_string()),
+                ("Up".to_string(), "move_cursor_up".to_string()),
+                ("Right".to_string(), "move_cursor_right".to_string()),
+                ("Home".to_string(), "move_cursor_start_of_line".to_string()),
+                ("End".to_string(), "move_cursor_end_of_line".to_string()),
+                ("PageUp".to_string(), "page_up".to_string()),
+                ("PageDown".to_string(), "page_down".to_string()),
             ].iter().cloned().collect(),
             insert_mode: [
                 ("Esc".to_string(), "exit_insert_mode".to_string()),
+                ("Enter".to_string(), "insert_newline".to_string()),
+                ("Backspace".to_string(), "backspace".to_string()),
+                ("Delete".to_string(), "delete_char".to_string()),
+                ("Left".to_string(), "move_cursor_left".to_string()),
+                ("Down".to_string(), "move_cursor_down".to_string()),
+                ("Up".to_string(), "move_cursor_up".to_string()),
+                ("Right".to_string(), "move_cursor_right".to_string()),
             ].iter().cloned().collect(),
             visual_mode: [
                 ("Esc".to_string(), "exit_visual_mode".to_string()),
                 ("y".to_string(), "yank_selection".to_string()),
                 ("d".to_string(), "delete_selection".to_string()),
+                ("Left".to_string(), "move_cursor_left".to_string()),
+                ("Down".to_string(), "move_cursor_down".to_string()),
+                ("Up".to_string(), "move_cursor_up".to_string()),
+                ("Right".to_string(), "move_cursor_right".to_string()),
             ].iter().cloned().collect(),
             command_mode: [
                 ("Enter".to_string(), "execute_command".to_string()),
@@ -269,13 +288,15 @@ impl Keybindings {
             file_select_mode: [
                 ("Enter".to_string(), "select_file".to_string()),
                 ("Esc".to_string(), "exit_file_select_mode".to_string()),
+                ("Up".to_string(), "move_cursor_up".to_string()),
+                ("Down".to_string(), "move_cursor_down".to_string()),
             ].iter().cloned().collect(),
             search_mode: [
                 ("Enter".to_string(), "execute_search".to_string()),
                 ("Esc".to_string(), "exit_search_mode".to_string()),
+                ("Backspace".to_string(), "search_backspace".to_string()),
             ].iter().cloned().collect(),
-            tab_mode: [
-            ].iter().cloned().collect(),
+            tab_mode: HashMap::new(),
         }
     }
 }
@@ -1070,25 +1091,6 @@ impl Editor {
                 self.pending_key = Some(key_str);
                 Ok(false)
             } else {
-                match key.code {
-                    KeyCode::Left => self.move_cursor_left(),
-                    KeyCode::Down => self.move_cursor_down(),
-                    KeyCode::Up => self.move_cursor_up(),
-                    KeyCode::Right => self.move_cursor_right(),
-                    KeyCode::Home => self.move_cursor_start_of_line(),
-                    KeyCode::End => self.move_cursor_end_of_line(),
-                    KeyCode::PageUp => self.page_up(),
-                    KeyCode::PageDown => self.page_down(),
-                    KeyCode::Tab => {
-                        self.next_tab();
-                        self.update_current_tab_info();
-                    },
-                    KeyCode::BackTab => {
-                        self.previous_tab();
-                        self.update_current_tab_info();
-                    },
-                    _ => {},
-                }
                 Ok(false)
             }
         }
@@ -1237,6 +1239,96 @@ impl Editor {
                 Ok(false)
             },
             "toggle_minimap" => self.toggle_minimap(),
+            "exit_insert_mode" => {
+                self.mode = Mode::Normal;
+                Ok(false)
+            },
+            "insert_newline" => {
+                self.insert_newline();
+                Ok(false)
+            },
+            "backspace" => {
+                self.backspace();
+                Ok(false)
+            },
+            "delete_char" => {
+                self.delete_char();
+                Ok(false)
+            },
+            "move_cursor_left" => {
+                self.move_cursor_left();
+                Ok(false)
+            },
+            "move_cursor_right" => {
+                self.move_cursor_right();
+                Ok(false)
+            },
+            "move_cursor_up" => {
+                self.move_cursor_up();
+                Ok(false)
+            },
+            "move_cursor_down" => {
+                self.move_cursor_down();
+                Ok(false)
+            },
+            "move_cursor_start_of_line" => {
+                self.move_cursor_start_of_line();
+                Ok(false)
+            },
+            "move_cursor_end_of_line" => {
+                self.move_cursor_end_of_line();
+                Ok(false)
+            },
+            "page_up" => {
+                self.page_up();
+                Ok(false)
+            },
+            "page_down" => {
+                self.page_down();
+                Ok(false)
+            },
+            "execute_search" => {
+                self.perform_search();
+                self.mode = Mode::Normal;
+                Ok(false)
+            },
+            "exit_search_mode" => {
+                self.mode = Mode::Normal;
+                Ok(false)
+            },
+            "delete_selection" => {
+                self.delete_selection();
+                self.mode = Mode::Normal;
+                Ok(false)
+            },
+            "yank_selection" => {
+                self.copy_selection();
+                self.mode = Mode::Normal;
+                Ok(false)
+            },
+            "exit_visual_mode" => {
+                self.mode = Mode::Normal;
+                Ok(false)
+            },
+            "select_file" => {
+                if let Some(file_selector) = &mut self.file_selector {
+                    if let Some(path) = file_selector.enter()? {
+                        self.open_file(&path)?;
+                        self.mode = Mode::Normal;
+                        self.file_selector = None;
+                    }
+                }
+                Ok(false)
+            },
+            "exit_file_select_mode" => {
+                self.mode = Mode::Normal;
+                self.file_selector = None;
+                Ok(false)
+            },
+            "search_backspace" => {
+                self.search_query.pop();
+                Ok(false)
+            },
             _ => Ok(false),
         }
     }
@@ -1270,19 +1362,17 @@ impl Editor {
     }
 
     fn handle_insert_mode(&mut self, key: KeyEvent) -> io::Result<bool> {
-        match key.code {
-            KeyCode::Esc => self.mode = Mode::Normal,
-            KeyCode::Enter => self.insert_newline(),
-            KeyCode::Backspace => self.backspace(),
-            KeyCode::Delete => self.delete_char(),
-            KeyCode::Left => self.move_cursor_left(),
-            KeyCode::Down => self.move_cursor_down(),
-            KeyCode::Up => self.move_cursor_up(),
-            KeyCode::Right => self.move_cursor_right(),
-            KeyCode::Char(c) => self.insert_char(c),
-            _ => {}
+        let key_str = Self::key_event_to_string(key);
+        
+        if let Some(action) = self.keybindings.insert_mode.get(&key_str).cloned() {
+            self.execute_action(&action)
+        } else {
+            match key.code {
+                KeyCode::Char(c) => self.insert_char(c),
+                _ => {}
+            }
+            Ok(false)
         }
-        Ok(false)
     }
 
     fn handle_command_mode(&mut self, key: KeyEvent) -> io::Result<bool> {
@@ -1297,45 +1387,37 @@ impl Editor {
     }
     
     fn handle_visual_mode(&mut self, key: KeyEvent) -> io::Result<bool> {
-        match key.code {
-            KeyCode::Esc => self.mode = Mode::Normal,
-            KeyCode::Left => self.move_cursor_left(),
-            KeyCode::Down => self.move_cursor_down(),
-            KeyCode::Up => self.move_cursor_up(),
-            KeyCode::Right => self.move_cursor_right(),
-            KeyCode::Char('y') => {
-                self.copy_selection();
-                self.mode = Mode::Normal;
-            }
-            KeyCode::Char('d') => {
-                self.delete_selection();
-                self.mode = Mode::Normal;
-            }
-            _ => {}
+        let key_str = Self::key_event_to_string(key);
+        
+        if let Some(action) = self.keybindings.visual_mode.get(&key_str).cloned() {
+            self.execute_action(&action)
+        } else {
+            Ok(false)
         }
-        Ok(false)
     }
     
     fn handle_file_select_mode(&mut self, key: KeyEvent) -> io::Result<bool> {
-        if let Some(file_selector) = &mut self.file_selector {
-            match key.code {
-                KeyCode::Up => file_selector.up(),
-                KeyCode::Down => file_selector.down(),
-                KeyCode::Enter => {
-                    if let Some(path) = file_selector.enter()? {
-                        self.open_file(&path)?;
-                        self.mode = Mode::Normal;
-                        self.file_selector = None;
-                    }
+        let key_str = Self::key_event_to_string(key);
+        
+        if let Some(action) = self.keybindings.file_select_mode.get(&key_str).cloned() {
+            if let Some(file_selector) = &mut self.file_selector {
+                match action.as_str() {
+                    "move_cursor_up" => {
+                        file_selector.up();
+                        Ok(false)
+                    },
+                    "move_cursor_down" => {
+                        file_selector.down();
+                        Ok(false)
+                    },
+                    _ => self.execute_action(&action)
                 }
-                KeyCode::Esc => {
-                    self.mode = Mode::Normal;
-                    self.file_selector = None;
-                }
-                _ => {}
+            } else {
+                Ok(false)
             }
+        } else {
+            Ok(false)
         }
-        Ok(false)
     }
     
     fn execute_command(&mut self) -> io::Result<bool> {
@@ -1754,6 +1836,14 @@ impl Editor {
     }
 
     fn ui<B: tui::backend::Backend>(&mut self, f: &mut Frame<B>) {
+        if self.mode == Mode::FileSelect {
+            if let Some(file_selector) = &self.file_selector {
+                let area = f.size();
+                file_selector.render(f, area, &self.color_config);
+                return;
+            }
+        }
+
         let total_width = f.size().width;
         let sidebar_width = if self.show_sidebar { self.sidebar_width } else { 0 };
         let minimap_width = if self.show_minimap && !self.tabs[self.active_tab].content.is_empty() { self.minimap_width } else { 0 };
@@ -2025,7 +2115,6 @@ impl Editor {
             );
             self.render_minimap(f, minimap_area);
         }
-    
     }
 
     fn enter_search_mode(&mut self) {
@@ -2070,23 +2159,19 @@ impl Editor {
     }
 
     fn handle_search_mode(&mut self, key: KeyEvent) -> io::Result<bool> {
-        match key.code {
-            KeyCode::Esc => {
-                self.mode = Mode::Normal;
+        let key_str = Self::key_event_to_string(key);
+        
+        if let Some(action) = self.keybindings.search_mode.get(&key_str).cloned() {
+            self.execute_action(&action)
+        } else {
+            match key.code {
+                KeyCode::Char(c) => {
+                    self.search_query.push(c);
+                }
+                _ => {}
             }
-            KeyCode::Enter => {
-                self.perform_search();
-                self.mode = Mode::Normal;
-            }
-            KeyCode::Char(c) => {
-                self.search_query.push(c);
-            }
-            KeyCode::Backspace => {
-                self.search_query.pop();
-            }
-            _ => {}
+            Ok(false)
         }
-        Ok(false)
     }
 
     fn get_editor_width(&self) -> usize {
