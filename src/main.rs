@@ -1062,7 +1062,16 @@ impl Editor {
         self.show_sidebar = !self.show_sidebar;
         if self.show_sidebar {
             let current_dir = if let Some(ref file) = self.current_file {
-                Path::new(file).parent().unwrap_or(Path::new(".")).to_path_buf()
+                let path = Path::new(file);
+                if let Some(parent) = path.parent() {
+                    if parent.exists() {
+                        parent.to_path_buf()
+                    } else {
+                        env::current_dir()?
+                    }
+                } else {
+                    env::current_dir()?
+                }
             } else {
                 env::current_dir()?
             };
