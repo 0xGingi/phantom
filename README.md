@@ -17,6 +17,7 @@ phantom is a lightweight, terminal-based linux text editor written in Rust. It c
 - Undo and Redo
 - Tabs
 - Minimap
+- Git status
 
 ## Cross-Plaform Status
 
