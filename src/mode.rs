@@ -25,4 +25,12 @@ impl fmt::Display for Mode {
             Mode::SidebarActive => write!(f, "SidebarActive"),
         }
     }
+}
+
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub enum LineNumberMode {
+    Off,
+    Absolute,
+    Relative,
+    Hybrid,
 } 

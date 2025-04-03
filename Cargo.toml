@@ -1,6 +1,6 @@
 [package]
 name = "phantom"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 
 [dependencies]
@@ -14,3 +14,4 @@ toml = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 dirs = "6.0"
 serde_json = "1.0"
+git2 = "0.20"

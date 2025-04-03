@@ -3,6 +3,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 use syntect::parsing::SyntaxSet;
+use git2::{Repository, Status};
 
 #[derive(Clone)]
 pub struct EditOperation {
@@ -21,6 +22,8 @@ pub struct Tab {
     pub syntax: String,
     pub undo_stack: VecDeque<EditOperation>,
     pub redo_stack: VecDeque<EditOperation>,
+    pub git_status: Option<Status>,
+    pub git_branch: Option<String>,
 }
 
 impl Tab {
@@ -34,6 +37,8 @@ impl Tab {
             syntax: "Plain Text".to_string(),
             undo_stack: VecDeque::new(),
             redo_stack: VecDeque::new(),
+            git_status: None,
+            git_branch: None,
         }
     }
 
@@ -54,6 +59,8 @@ impl Tab {
             }
         }
 
+        let (git_status, git_branch) = Self::get_git_info(path);
+
         let tab = Tab {
             content: lines,
             cursor_position: (0, 0),
@@ -63,8 +70,43 @@ impl Tab {
             syntax,
             undo_stack: VecDeque::new(),
             redo_stack: VecDeque::new(),
+            git_status,
+            git_branch,
         };
         Ok(tab)
+    }
+
+    pub fn get_git_info(path: &Path) -> (Option<Status>, Option<String>) {
+        let repo_result = Repository::discover(path);
+        if repo_result.is_err() {
+            return (None, None);
+        }
+        let repo = repo_result.unwrap();
+
+        let status = if !path.exists() {
+            Some(Status::WT_NEW)
+        } else {
+             match repo.workdir() {
+                Some(workdir) => {
+                    let relative_path = path.strip_prefix(workdir).ok();
+                    relative_path.and_then(|p| repo.status_file(p).ok())
+                },
+                None => None,
+            }
+        };
+
+        let branch = match repo.head() {
+            Ok(head) => {
+                if head.is_branch() {
+                    head.shorthand().map(String::from)
+                } else {
+                    None
+                }
+            },
+            Err(_) => None,
+        };
+
+        (status, branch)
     }
 
     pub fn adjust_horizontal_scroll(&mut self, editor_width: usize) {

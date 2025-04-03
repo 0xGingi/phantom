@@ -1,7 +1,7 @@
 use crate::{
     config::{ColorConfig, Keybindings},
     file_selector::FileSelector,
-    mode::Mode,
+    mode::{Mode, LineNumberMode},
     tab::{EditOperation, Tab},
     ui,
 };
@@ -12,12 +12,11 @@ use crossterm::{
 };
 use std::{error::Error, io};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::env;
 use tui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Rect, Margin, Alignment},
     style::{Color, Modifier, Style},
     text::{Span, Spans},
     widgets::{Block, Borders, Paragraph, Tabs},
@@ -28,6 +27,7 @@ use syntect::highlighting::{ThemeSet, Style as SyntectStyle};
 use syntect::parsing::SyntaxSet;
 use copypasta::ClipboardProvider;
 use dirs;
+use git2::Status;
 
 pub struct Editor {
     content: Vec<String>,
@@ -63,6 +63,9 @@ pub struct Editor {
     minimap_line_mapping: Vec<(usize, usize)>,
     current_editor_height: usize,
     current_editor_width: usize,
+    line_number_mode: LineNumberMode,
+    line_number_width: u16,
+    highlight_bracket_matches: bool,
 }
 
 impl Editor {
@@ -104,6 +107,9 @@ impl Editor {
             minimap_line_mapping: Vec::new(),
             current_editor_height: 24,
             current_editor_width: 80,
+            line_number_mode: LineNumberMode::Absolute,
+            line_number_width: 0,
+            highlight_bracket_matches: true,
         }
     }
 
@@ -750,6 +756,7 @@ impl Editor {
                 self.toggle_debug_menu();
                 Ok(false)
             },
+            "toggle_line_numbers" => self.toggle_line_numbers(),
             "enter_directory_nav_mode" => self.enter_directory_nav_mode(),
             "enter_search_mode" => {
                 self.enter_search_mode();
@@ -1143,10 +1150,24 @@ impl Editor {
     fn insert_newline(&mut self) {
         self.save_state();
         let tab = &mut self.tabs[self.active_tab];
-        let current_line = &mut tab.content[tab.cursor_position.1];
-        let rest_of_line = current_line.split_off(tab.cursor_position.0);
-        tab.content.insert(tab.cursor_position.1 + 1, rest_of_line);
-        tab.cursor_position = (0, tab.cursor_position.1 + 1);
+        let (x, y) = tab.cursor_position;
+    
+        let current_line = &mut tab.content[y];
+    
+        let leading_whitespace = current_line.chars()
+            .take_while(|c| c.is_whitespace())
+            .collect::<String>();
+    
+        let rest_of_line = current_line.split_off(x);
+    
+        let mut new_line = leading_whitespace.clone();
+        new_line.push_str(&rest_of_line);
+    
+        tab.content.insert(y + 1, new_line);
+    
+        tab.cursor_position = (leading_whitespace.len(), y + 1);
+    
+        self.ensure_cursor_visible(); 
     }
 
     fn page_up(&mut self) {
@@ -1367,54 +1388,59 @@ impl Editor {
     }
 
     fn save_file(&mut self, filename: Option<&Path>) -> io::Result<()> {
-        let tab = &mut self.tabs[self.active_tab];
-        let filename = if let Some(name) = filename {
+        let tab_index = self.active_tab;
+        let filename_path = if let Some(name) = filename {
             name.to_path_buf()
-        } else if let Some(ref name) = tab.current_file {
+        } else if let Some(ref name) = self.tabs[tab_index].current_file {
             PathBuf::from(name)
         } else {
             return Err(io::Error::new(io::ErrorKind::Other, "No filename specified. Use :w <filename> to save."));
         };
-    
-        if let Some(parent) = filename.parent() {
+
+        if let Some(parent) = filename_path.parent() {
             fs::create_dir_all(parent)?;
         }
-    
-        let mut file = fs::File::create(&filename)?;
-        for line in &tab.content {
-            writeln!(file, "{}", line)?;
-        }
-        tab.current_file = Some(filename.to_string_lossy().into_owned());
+
+        let content_to_save = self.tabs[tab_index].content.join("\n");
+        fs::write(&filename_path, content_to_save)?;
+        
+        let tab = &mut self.tabs[tab_index];
+        tab.current_file = Some(filename_path.to_string_lossy().into_owned());
+        let (status, branch) = Tab::get_git_info(&filename_path);
+        tab.git_status = status;
+        tab.git_branch = branch;
+
         self.update_tab_name();
-        self.debug_messages.push(format!("File saved: {}", filename.display()));
+        self.debug_messages.push(format!("File saved: {}", filename_path.display()));
         Ok(())
     }
 
     fn open_file(&mut self, path: &Path) -> io::Result<()> {
-        let new_tab = if path.exists() {
-            Tab::from_file(path, &self.ps)?
-        } else {
-            let mut tab = Tab::new();
-            tab.current_file = Some(path.to_string_lossy().into_owned());
-            tab
-        };
-    
+        let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+
+        let new_tab = Tab::from_file(&canonical_path, &self.ps)?;
+
         if self.tabs.len() == 1 && self.tabs[0].content == vec![String::new()] && self.tabs[0].current_file.is_none() {
             self.tabs[0] = new_tab;
             self.active_tab = 0;
         } else {
-            self.tabs.push(new_tab);
-            self.active_tab = self.tabs.len() - 1;
+            if let Some(existing_index) = self.tabs.iter().position(|t| t.current_file.as_deref() == Some(canonical_path.to_string_lossy().as_ref())) {
+                self.active_tab = existing_index;
+            } else {
+                self.tabs.push(new_tab);
+                self.active_tab = self.tabs.len() - 1;
+            }
         }
-        
+
+        self.update_current_tab_info();
         self.update_tab_name();
-        
-        if path.exists() {
-            self.debug_messages.push(format!("File opened: {}", path.display()));
+
+        if canonical_path.exists() {
+            self.debug_messages.push(format!("File opened: {}", canonical_path.display()));
         } else {
-            self.debug_messages.push(format!("New file: {} (not yet saved)", path.display()));
+            self.debug_messages.push(format!("New file: {} (not yet saved)", canonical_path.display()));
         }
-        
+
         Ok(())
     }
 
@@ -1425,6 +1451,17 @@ impl Editor {
         } else {
             "Debug menu hidden".to_string()
         });
+    }
+
+    fn toggle_line_numbers(&mut self) -> io::Result<bool> {
+        self.line_number_mode = match self.line_number_mode {
+            LineNumberMode::Off => LineNumberMode::Absolute,
+            LineNumberMode::Absolute => LineNumberMode::Relative,
+            LineNumberMode::Relative => LineNumberMode::Hybrid,
+            LineNumberMode::Hybrid => LineNumberMode::Off,
+        };
+        self.debug_messages.push(format!("Line number mode: {:?}", self.line_number_mode));
+        Ok(false)
     }
 
     fn enter_directory_nav_mode(&mut self) -> io::Result<bool> {
@@ -1447,29 +1484,50 @@ impl Editor {
             }
         }
 
+        let active_tab = &self.tabs[self.active_tab];
+        let total_lines = active_tab.content.len();
+        let cursor_position = active_tab.cursor_position;
+        let scroll_offset = active_tab.scroll_offset;
+        let horizontal_scroll = active_tab.horizontal_scroll;
+
+        let maybe_match_pos = if self.highlight_bracket_matches {
+            self.find_matching_bracket(cursor_position)
+        } else {
+            None
+        };
+        let bracket_match_style = Style::default()
+            .bg(ui::parse_color(&self.color_config.bracket_match))
+            .add_modifier(Modifier::BOLD);
+
+        let line_number_digit_count = total_lines.to_string().len();
+        let calculated_line_number_width = if self.line_number_mode != LineNumberMode::Off {
+            (line_number_digit_count as u16).max(3) + 2
+        } else {
+            0
+        };
+        self.line_number_width = calculated_line_number_width;
+
         let total_width = f.size().width;
         let sidebar_width = if self.show_sidebar { self.sidebar_width } else { 0 };
-        let minimap_width = if self.show_minimap && !self.tabs[self.active_tab].content.is_empty() { self.minimap_width } else { 0 };
-        let editor_width = total_width.saturating_sub(sidebar_width + minimap_width);
-        
-        self.current_editor_width = editor_width as usize;
+        let minimap_width = if self.show_minimap && !active_tab.content.is_empty() { self.minimap_width } else { 0 };
+        let editor_column_width = total_width.saturating_sub(sidebar_width + minimap_width);
 
         let mut constraints = vec![];
         if sidebar_width > 0 {
             constraints.push(Constraint::Length(sidebar_width));
         }
-        constraints.push(Constraint::Length(editor_width));
+        constraints.push(Constraint::Length(editor_column_width));
         if minimap_width > 0 {
             constraints.push(Constraint::Length(minimap_width));
-        }    
+        }
 
         let main_layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(constraints)
-        .split(f.size());
-    
+            .direction(Direction::Horizontal)
+            .constraints(constraints)
+            .split(f.size());
+
         let mut current_layout_index = 0;
-                    
+
         if self.show_sidebar {
             if let Some(file_selector) = &self.file_selector {
                 file_selector.render(f, main_layout[current_layout_index], &self.color_config);
@@ -1478,8 +1536,8 @@ impl Editor {
         }
 
         let editor_area = main_layout[current_layout_index];
-        current_layout_index += 1;    
-                            
+        current_layout_index += 1;
+
         let tab_bar_height = 3;
         let editor_layout = Layout::default()
             .direction(Direction::Vertical)
@@ -1500,33 +1558,71 @@ impl Editor {
                 }
             )
             .split(editor_area);
-        
-            let tab_titles: Vec<Spans> = self.tabs.iter().enumerate().map(|(i, tab)| {
-                let title = tab.current_file.as_ref()
-                    .and_then(|f| Path::new(f).file_name())
-                    .and_then(|f| f.to_str())
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| format!("Untitled-{}", i + 1));
-        
-                let style = if i == self.active_tab {
-                    Style::default().fg(ui::parse_color(&self.color_config.tab_active))
-                } else {
-                    Style::default().fg(ui::parse_color(&self.color_config.tab_inactive))
-                };
-                Spans::from(vec![
-                    Span::styled(format!(" {} ", i + 1), style),
-                    Span::styled(title, style),
-                    Span::raw(" "),
-                ])
-            }).collect();
-        
+
+        let tab_titles: Vec<Spans> = self.tabs.iter().enumerate().map(|(i, tab)| {
+            let base_title = tab.current_file.as_ref()
+                .and_then(|f| Path::new(f).file_name())
+                .and_then(|f| f.to_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("Untitled-{}", i + 1));
+
+            let status_indicator = match tab.git_status {
+                Some(s) if s.contains(Status::WT_MODIFIED) | s.contains(Status::INDEX_MODIFIED) => "*", // Modified
+                Some(s) if s.contains(Status::WT_NEW) | s.contains(Status::INDEX_NEW) => "+", // New
+                Some(s) if s.contains(Status::WT_DELETED) | s.contains(Status::INDEX_DELETED) => "-", // Deleted
+                Some(s) if s.contains(Status::WT_RENAMED) | s.contains(Status::INDEX_RENAMED) => "R", // Renamed
+                Some(s) if s.contains(Status::WT_TYPECHANGE) | s.contains(Status::INDEX_TYPECHANGE) => "T", // Typechange
+                _ => "",
+            };
+            let title_with_status = format!("{}{}", base_title, status_indicator);
+
+            let style = if i == self.active_tab {
+                Style::default().fg(ui::parse_color(&self.color_config.tab_active))
+            } else {
+                Style::default().fg(ui::parse_color(&self.color_config.tab_inactive))
+            };
+            Spans::from(vec![
+                Span::styled(format!(" {} ", i + 1), style),
+                Span::styled(title_with_status, style),
+                Span::raw(" "),
+            ])
+        }).collect();
+
         let tab_bar = Tabs::new(tab_titles)
             .block(Block::default().borders(Borders::ALL).title("Tabs"))
             .select(self.active_tab)
             .style(Style::default().bg(ui::parse_color(&self.color_config.tab_background)))
             .highlight_style(Style::default().fg(ui::parse_color(&self.color_config.tab_active)));
-    
+
         f.render_widget(tab_bar, editor_layout[0]);
+
+        let editor_chunk_index = if self.show_debug { 2 } else { 1 };
+        let editor_widget_rect = editor_layout[editor_chunk_index];
+
+        let editor_height = editor_widget_rect.height.saturating_sub(2) as usize;
+        let editor_text_width = editor_widget_rect.width
+            .saturating_sub(2)
+            .saturating_sub(self.line_number_width) as usize;
+
+        self.current_editor_height = editor_height;
+        self.current_editor_width = editor_text_width;
+
+        let content = &active_tab.content;
+
+        let inner_rect = editor_widget_rect.inner(&Margin { vertical: 1, horizontal: 1 });
+
+        let (line_number_area, text_content_area) = if self.line_number_mode != LineNumberMode::Off {
+            let layout = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(self.line_number_width),
+                    Constraint::Min(0),
+                ])
+                .split(inner_rect);
+            (layout[0], layout[1])
+        } else {
+            (Rect::default(), inner_rect)
+        };
 
         let mode_indicator = match self.mode {
             Mode::Normal => "NORMAL",
@@ -1538,7 +1634,6 @@ impl Editor {
             Mode::Search => "SEARCH",
             Mode::SidebarActive => "SIDEBAR",
         };
-    
         let block = Block::default()
             .borders(Borders::ALL)
             .title(Span::styled(
@@ -1547,187 +1642,328 @@ impl Editor {
                     .fg(ui::parse_color(&self.color_config.foreground))
                     .add_modifier(Modifier::BOLD),
             ));
-    
+        f.render_widget(block, editor_widget_rect);
+
+        if self.line_number_mode != LineNumberMode::Off {
+            let line_number_style = Style::default()
+                .fg(ui::parse_color(&self.color_config.line_number))
+                .bg(ui::parse_color(&self.color_config.background));
+            let current_line_style = line_number_style.add_modifier(Modifier::BOLD);
+            let max_width = (self.line_number_width - 1) as usize;
+
+            let line_numbers: Vec<Spans> = (0..editor_height)
+                .map(|i| {
+                    let current_absolute_line = scroll_offset + i + 1;
+                    if current_absolute_line <= total_lines {
+                        let (display_num, style) = match self.line_number_mode {
+                            LineNumberMode::Absolute => {
+                                (current_absolute_line.to_string(), line_number_style)
+                            }
+                            LineNumberMode::Relative => {
+                                if current_absolute_line == cursor_position.1 + 1 {
+                                    (current_absolute_line.to_string(), current_line_style)
+                                } else {
+                                    let diff = ((cursor_position.1 + 1) as isize - current_absolute_line as isize).abs();
+                                    (diff.to_string(), line_number_style)
+                                }
+                            }
+                            LineNumberMode::Hybrid => {
+                                if current_absolute_line == cursor_position.1 + 1 {
+                                    (current_absolute_line.to_string(), current_line_style)
+                                } else {
+                                    let diff = ((cursor_position.1 + 1) as isize - current_absolute_line as isize).abs();
+                                    (diff.to_string(), line_number_style)
+                                }
+                            }
+                            LineNumberMode::Off => unreachable!(),
+                        };
+                        Spans::from(Span::styled(
+                            format!("{:>width$} ", display_num, width = max_width),
+                            style,
+                        ))
+                    } else {
+                        Spans::from(Span::styled(
+                            format!("{:>width$} ", "~", width = max_width),
+                            line_number_style,
+                        ))
+                    }
+                })
+                .collect();
+
+            let line_number_paragraph = Paragraph::new(line_numbers)
+                .style(line_number_style)
+                .alignment(Alignment::Right);
+
+            f.render_widget(line_number_paragraph, line_number_area);
+        }
+
         let syntax = self.ps.find_syntax_by_extension("rs")
             .or_else(|| self.ps.find_syntax_by_name(&self.syntax))
             .unwrap_or_else(|| self.ps.find_syntax_plain_text());
-    
         let theme = &self.ts.themes["base16-ocean.dark"];
-        let _background_color = ui::parse_color(&self.color_config.background);
-        let _foreground_color = ui::parse_color(&self.color_config.foreground);
-    
         let mut h = HighlightLines::new(syntax, theme);
-    
-        let editor_chunk_index = if self.show_debug { 2 } else { 1 };
-        let editor_widget_rect = editor_layout[editor_chunk_index];
 
-        let editor_height = editor_widget_rect.height.saturating_sub(2) as usize;
-        let editor_width = editor_widget_rect.width.saturating_sub(2) as usize;
-
-        self.current_editor_height = editor_height;
-        self.current_editor_width = editor_width;
-    
-        let active_tab = &self.tabs[self.active_tab];
-        let content = &active_tab.content;
-        let cursor_position = active_tab.cursor_position;
-        let scroll_offset = active_tab.scroll_offset;
-        let horizontal_scroll = active_tab.horizontal_scroll;
-    
         let visible_content = content.iter()
             .skip(scroll_offset)
             .take(editor_height)
             .enumerate();
-        
-        let mut text = Vec::new();
+
+        let mut text_spans = Vec::new();
         for (index, line) in visible_content {
+            let absolute_line_index = scroll_offset + index;
             let ranges: Vec<(SyntectStyle, &str)> = h.highlight_line(line, &self.ps).unwrap();
-            let mut styled_spans = Vec::new();
-            let mut line_length = 0;
-            for (style, content) in ranges {
+            let mut current_line_styled_spans = Vec::new();
+            let mut current_char_pos = 0;
+
+            for (style, segment) in ranges {
                 let color = style.foreground;
-                let visible_content = if line_length >= horizontal_scroll {
-                    content
-                } else if line_length + content.len() > horizontal_scroll {
-                    &content[horizontal_scroll - line_length..]
-                } else {
-                    ""
-                };
-                line_length += content.len();
-                if !visible_content.is_empty() {
-                    styled_spans.push(Span::styled(
-                        visible_content.to_string(),
-                        Style::default().fg(Color::Rgb(color.r, color.g, color.b))
+                let segment_len = segment.len();
+                let segment_start = current_char_pos;
+                let segment_end = segment_start + segment_len;
+
+                let visible_start = horizontal_scroll.max(segment_start);
+                let visible_end = (horizontal_scroll + editor_text_width).min(segment_end);
+
+                if visible_start < visible_end {
+                    let visible_segment_offset = visible_start - segment_start;
+                    let visible_segment_len = visible_end - visible_start;
+                    let visible_segment = &segment[visible_segment_offset..visible_segment_offset + visible_segment_len];
+
+                    current_line_styled_spans.push(Span::styled(
+                        visible_segment.to_string(),
+                        Style::default().fg(Color::Rgb(color.r, color.g, color.b)),
                     ));
                 }
-                if line_length >= horizontal_scroll + editor_width {
+                current_char_pos += segment_len;
+                if current_char_pos >= horizontal_scroll + editor_text_width {
                     break;
                 }
             }
-    
+
             if let (Some(start), Some(end)) = (self.mouse_selection_start, self.mouse_selection_end) {
-                if start != end {
-                    let (start, end) = if start <= end { (start, end) } else { (end, start) };
-                    let y = index + scroll_offset;
-                    if y >= start.1 && y <= end.1 {
-                        let start_x = if y == start.1 { start.0.saturating_sub(horizontal_scroll) } else { 0 };
-                        let end_x = if y == end.1 { end.0.saturating_sub(horizontal_scroll) } else { editor_width };
-                        
-                        styled_spans = styled_spans.into_iter().enumerate().flat_map(|(i, span)| {
-                            let mut result = Vec::new();
-                            let span_start = i;
-                            let span_end = span_start + span.content.len();
-    
-                            if span_end <= start_x || span_start >= end_x {
-                                vec![span]
+                 if start != end {
+                    let (selection_start, selection_end) = if start <= end { (start, end) } else { (end, start) };
+                    if absolute_line_index >= selection_start.1 && absolute_line_index <= selection_end.1 {
+                        let line_selection_start_col = if absolute_line_index == selection_start.1 { selection_start.0 } else { 0 };
+                        let line_selection_end_col = if absolute_line_index == selection_end.1 { selection_end.0 } else { usize::MAX };
+
+                        let visible_selection_start = line_selection_start_col.saturating_sub(horizontal_scroll);
+                        let visible_selection_end = line_selection_end_col.saturating_sub(horizontal_scroll);
+
+                        let mut highlighted_spans = Vec::new();
+                        let mut current_col = 0;
+                        for span in current_line_styled_spans {
+                             let span_len = span.content.len();
+                            let span_start_col = current_col;
+                            let span_end_col = current_col + span_len;
+
+                            let overlap_start = span_start_col.max(visible_selection_start);
+                            let overlap_end = span_end_col.min(visible_selection_end);
+
+                            if overlap_start < overlap_end {
+                                if span_start_col < overlap_start {
+                                    highlighted_spans.push(Span::styled(
+                                        span.content[..(overlap_start - span_start_col)].to_string(),
+                                        span.style,
+                                    ));
+                                }
+                                highlighted_spans.push(Span::styled(
+                                    span.content[(overlap_start - span_start_col)..(overlap_end - span_start_col)].to_string(),
+                                     Style::default().bg(Color::DarkGray).fg(Color::White)
+                                ));
+                                if span_end_col > overlap_end {
+                                     highlighted_spans.push(Span::styled(
+                                        span.content[(overlap_end - span_start_col)..].to_string(),
+                                        span.style,
+                                    ));
+                                }
                             } else {
-                                if span_start < start_x {
-                                    result.push(Span::styled(
-                                        span.content[..(start_x - span_start).min(span.content.len())].to_string(),
-                                        span.style
-                                    ));
-                                }
-                                let highlight_start = start_x.saturating_sub(span_start);
-                                let highlight_end = (end_x.saturating_sub(span_start)).min(span.content.len());
-                                if highlight_start < highlight_end {
-                                    result.push(Span::styled(
-                                        span.content[highlight_start..highlight_end].to_string(),
-                                        Style::default().bg(Color::Gray).fg(Color::Black)
-                                    ));
-                                }
-                                if span_end > end_x {
-                                    result.push(Span::styled(
-                                        span.content[(end_x.saturating_sub(span_start))..].to_string(),
-                                        span.style
-                                    ));
-                                }
-                                result
+                                highlighted_spans.push(span);
                             }
-                        }).collect();
+                            current_col += span_len;
+                        }
+                         current_line_styled_spans = highlighted_spans;
                     }
+                 }
+            }
+
+            if let Some(match_pos) = maybe_match_pos {
+                let cursor_bracket_visible = absolute_line_index == cursor_position.1 &&
+                                             cursor_position.0 >= horizontal_scroll &&
+                                             cursor_position.0 < horizontal_scroll + editor_text_width;
+                let match_bracket_visible = absolute_line_index == match_pos.1 &&
+                                            match_pos.0 >= horizontal_scroll &&
+                                            match_pos.0 < horizontal_scroll + editor_text_width;
+
+                if cursor_bracket_visible || match_bracket_visible {
+                    let mut spans_with_brackets = Vec::new();
+                    let mut current_col_offset = 0;
+                    for span in current_line_styled_spans {
+                        let span_len = span.content.len();
+                        let span_start_abs = horizontal_scroll + current_col_offset;
+                        let span_end_abs = span_start_abs + span_len;
+
+                        let mut last_split = 0;
+                        let mut modified = false;
+
+                        if cursor_bracket_visible && absolute_line_index == cursor_position.1 &&
+                           cursor_position.0 >= span_start_abs && cursor_position.0 < span_end_abs {
+                            let bracket_offset = cursor_position.0 - span_start_abs;
+                            if bracket_offset > last_split {
+                                spans_with_brackets.push(Span::styled(span.content[last_split..bracket_offset].to_string(), span.style));
+                            }
+                            spans_with_brackets.push(Span::styled(span.content[bracket_offset..bracket_offset+1].to_string(), bracket_match_style));
+                            last_split = bracket_offset + 1;
+                            modified = true;
+                        }
+
+                        if match_bracket_visible && absolute_line_index == match_pos.1 &&
+                           match_pos.0 >= span_start_abs && match_pos.0 < span_end_abs {
+                            let bracket_offset = match_pos.0 - span_start_abs;
+                            if bracket_offset > last_split {
+                                spans_with_brackets.push(Span::styled(span.content[last_split..bracket_offset].to_string(), span.style));
+                            }
+                            if !(cursor_bracket_visible && cursor_position == match_pos) {
+                                spans_with_brackets.push(Span::styled(span.content[bracket_offset..bracket_offset+1].to_string(), bracket_match_style));
+                            }
+                            last_split = bracket_offset + 1;
+                            modified = true;
+                        }
+
+                        if modified {
+                            if last_split < span.content.len() {
+                                spans_with_brackets.push(Span::styled(span.content[last_split..].to_string(), span.style));
+                            }
+                        } else {
+                            spans_with_brackets.push(span);
+                        }
+                        current_col_offset += span_len;
+                    }
+                    current_line_styled_spans = spans_with_brackets;
                 }
             }
-                                            
-            if index + scroll_offset == cursor_position.1 {
-                let mut line_spans = Vec::new();
+
+            if absolute_line_index == cursor_position.1 {
+                 let mut spans_with_cursor = Vec::new();
                 let mut current_len = 0;
-                for span in styled_spans {
+                let cursor_col_in_view = cursor_position.0.saturating_sub(horizontal_scroll);
+
+                for span in current_line_styled_spans {
                     let span_len = span.content.len();
-                    if current_len <= cursor_position.0 - horizontal_scroll && cursor_position.0 - horizontal_scroll < current_len + span_len {
-                        let (before, after) = span.content.split_at(cursor_position.0 - horizontal_scroll - current_len);
+                    let span_start = current_len;
+                    let span_end = current_len + span_len;
+
+                    if span_start <= cursor_col_in_view && cursor_col_in_view < span_end {
+                         let (before, after) = span.content.split_at(cursor_col_in_view - span_start);
                         if !before.is_empty() {
-                            line_spans.push(Span::styled(before.to_string(), span.style));
+                            spans_with_cursor.push(Span::styled(before.to_string(), span.style));
                         }
-                        line_spans.push(Span::styled("".to_string(), self.cursor_style));
+                        spans_with_cursor.push(Span::styled("".to_string(), self.cursor_style));
                         if !after.is_empty() {
-                            line_spans.push(Span::styled(after.to_string(), span.style));
+                            spans_with_cursor.push(Span::styled(after.to_string(), span.style));
                         }
                     } else {
-                        line_spans.push(span);
+                         spans_with_cursor.push(span);
                     }
                     current_len += span_len;
                 }
-                if cursor_position.0 - horizontal_scroll >= current_len {
-                    line_spans.push(Span::styled("".to_string(), self.cursor_style));
+                 if cursor_col_in_view >= current_len {
+                     spans_with_cursor.push(Span::styled("".to_string(), self.cursor_style));
                 }
-                text.push(Spans::from(line_spans));
+                 text_spans.push(Spans::from(spans_with_cursor));
             } else {
-                text.push(Spans::from(styled_spans));
+                 text_spans.push(Spans::from(current_line_styled_spans));
             }
         }
-            
-        let paragraph = Paragraph::new(text)
-            .block(block)
+
+        let text_paragraph = Paragraph::new(text_spans)
             .style(Style::default().bg(ui::parse_color(&self.color_config.background)));
-        f.render_widget(paragraph, editor_layout[editor_chunk_index]);
-    
+        f.render_widget(text_paragraph, text_content_area);
+
         if self.show_debug {
             let debug_messages: Vec<Spans> = self.debug_messages.iter().map(|m| Spans::from(m.clone())).collect();
             let debug_paragraph = Paragraph::new(debug_messages)
                 .block(Block::default().borders(Borders::ALL).title("Debug Output"));
             f.render_widget(debug_paragraph, editor_layout[1]);
         }
-    
+
+        let bottom_bar_index = editor_layout.len() - 1;
+        let bottom_bar_area = editor_layout[bottom_bar_index];
+        let status_bar_style = Style::default()
+            .fg(ui::parse_color(&self.color_config.foreground))
+            .bg(ui::parse_color(&self.color_config.background));
+
         if self.mode == Mode::Command {
             let command_text = Spans::from(format!(":{}", self.command_buffer));
-            let command_paragraph = Paragraph::new(vec![command_text]);
-            f.render_widget(command_paragraph, editor_layout[editor_layout.len() - 1]);
+            let command_paragraph = Paragraph::new(vec![command_text]).style(status_bar_style);
+            f.render_widget(command_paragraph, bottom_bar_area);
         } else if self.mode == Mode::Search {
             let search_text = Spans::from(format!("Search: {}", self.search_query));
-            let search_paragraph = Paragraph::new(vec![search_text]);
-            f.render_widget(search_paragraph, editor_layout[editor_layout.len() - 1]);
+            let search_paragraph = Paragraph::new(vec![search_text]).style(status_bar_style);
+            f.render_widget(search_paragraph, bottom_bar_area);
+        } else {
+            let mode_str = match self.mode {
+                Mode::Normal => "NORMAL",
+                Mode::Insert => "INSERT",
+                Mode::Visual => "VISUAL",
+                _ => "",
+            };
+
+            let filename = active_tab.current_file.as_deref().unwrap_or("[No Name]");
+            let branch = active_tab.git_branch.as_deref().unwrap_or("");
+            let (cursor_col, cursor_line) = active_tab.cursor_position;
+
+            let left_status = format!(" {} | {} ", mode_str, filename);
+            let middle_status = format!(" {} ", branch);
+            let right_status = format!(" {}:{} ", cursor_line + 1, cursor_col + 1);
+
+            let total_width = bottom_bar_area.width as usize;
+            let left_len = left_status.len();
+            let middle_len = middle_status.len();
+            let right_len = right_status.len();
+
+            let padding = total_width.saturating_sub(left_len + middle_len + right_len);
+            let left_padding = padding / 2;
+            let right_padding = padding - left_padding;
+
+            let status_line = Spans::from(vec![
+                Span::styled(left_status, status_bar_style),
+                Span::styled(" ".repeat(left_padding), status_bar_style),
+                Span::styled(middle_status, status_bar_style.add_modifier(Modifier::BOLD)),
+                Span::styled(" ".repeat(right_padding), status_bar_style),
+                Span::styled(right_status, status_bar_style),
+            ]);
+
+            let status_paragraph = Paragraph::new(status_line);
+            f.render_widget(status_paragraph, bottom_bar_area);
         }
-    
+
         let relative_cursor_x = cursor_position.0.saturating_sub(horizontal_scroll) as u16;
-        let absolute_cursor_x = editor_widget_rect.x + 1 + relative_cursor_x;
-
         let relative_cursor_y = cursor_position.1.saturating_sub(scroll_offset) as u16;
-        let absolute_cursor_y = editor_widget_rect.y + 1 + relative_cursor_y;
 
-        let max_absolute_cursor_y = editor_widget_rect.y + 1 + (self.current_editor_height.saturating_sub(1)) as u16;
+        let absolute_cursor_x = text_content_area.x + relative_cursor_x;
+        let absolute_cursor_y = text_content_area.y + relative_cursor_y;
 
-        let clamped_absolute_cursor_y = absolute_cursor_y.min(max_absolute_cursor_y);
+        let clamped_absolute_cursor_x = absolute_cursor_x.min(text_content_area.right().saturating_sub(1));
+        let clamped_absolute_cursor_y = absolute_cursor_y.min(text_content_area.bottom().saturating_sub(1));
 
-        let max_absolute_cursor_x = editor_widget_rect.x + 1 + (self.current_editor_width.saturating_sub(1)) as u16;
-        
-        let clamped_absolute_cursor_x = absolute_cursor_x.min(max_absolute_cursor_x);
 
         f.set_cursor(
             clamped_absolute_cursor_x,
             clamped_absolute_cursor_y
         );
 
-        if self.show_minimap && !self.tabs[self.active_tab].content.is_empty() && current_layout_index < main_layout.len() {
-            self.render_minimap(f, main_layout[current_layout_index]);
-        }
-        
-        if self.show_minimap {
+        if self.show_minimap && !active_tab.content.is_empty() && current_layout_index < main_layout.len() {
             let minimap_area = Rect::new(
-                editor_area.right(),
-                editor_area.top(),
+                 editor_area.right(),
+                editor_area.y,
                 self.minimap_width,
-                editor_area.height
+                 editor_area.height
             );
-            self.render_minimap(f, minimap_area);
+             let clipped_minimap_area = minimap_area.intersection(f.size());
+             if clipped_minimap_area.width > 0 && clipped_minimap_area.height > 0 {
+                 self.render_minimap(f, clipped_minimap_area);
+             }
         }
     }
 
@@ -1786,5 +2022,79 @@ impl Editor {
             }
             Ok(false)
         }
+    }
+
+    fn find_matching_bracket(&self, position: (usize, usize)) -> Option<(usize, usize)> {
+        let tab = &self.tabs[self.active_tab];
+        let (x, y) = position;
+    
+        if y >= tab.content.len() || x >= tab.content[y].len() {
+            return None;
+        }
+    
+        let current_char = tab.content[y].chars().nth(x)?;
+        let (expected_match, search_forward) = match current_char {
+            '(' => (')', true),
+            ')' => ('(', false),
+            '[' => (']', true),
+            ']' => ('[', false),
+            '{' => ('}', true),
+            '}' => ('{', false),
+            _ => return None,
+        };
+    
+        let mut level = 0;
+        let mut current_pos = position;
+    
+        if search_forward {
+            current_pos.0 += 1;
+            for line_idx in current_pos.1..tab.content.len() {
+                let line = &tab.content[line_idx];
+                let start_col = if line_idx == current_pos.1 { current_pos.0 } else { 0 };
+                for (col_idx, char) in line.chars().enumerate().skip(start_col) {
+                    if char == current_char {
+                        level += 1;
+                    } else if char == expected_match {
+                        if level == 0 {
+                            return Some((col_idx, line_idx));
+                        } else {
+                            level -= 1;
+                        }
+                    }
+                }
+            }
+        } else {
+            if current_pos.0 == 0 {
+                if current_pos.1 == 0 {
+                     return None;
+                }
+                current_pos.1 -= 1;
+                current_pos.0 = tab.content[current_pos.1].len();
+            } else {
+                current_pos.0 -= 1;
+            }
+
+            for line_idx in (0..=current_pos.1).rev() {
+                let line = &tab.content[line_idx];
+                let end_col = if line_idx == current_pos.1 { current_pos.0 + 1 } else { line.len() };
+                let chars_in_range: Vec<(usize, char)> = line.chars()
+                                                             .enumerate()
+                                                             .take(end_col)
+                                                             .collect();
+                for (col_idx, char) in chars_in_range.into_iter().rev() {
+                    if char == current_char {
+                        level += 1;
+                    } else if char == expected_match {
+                        if level == 0 {
+                            return Some((col_idx, line_idx));
+                        } else {
+                            level -= 1;
+                        }
+                    }
+                }
+            }
+        }
+    
+        None
     }
 } 
