@@ -43,7 +43,12 @@ impl Tab {
     }
 
     pub fn from_file(path: &Path, ps: &SyntaxSet) -> io::Result<Self> {
-        let content = fs::read_to_string(path)?;
+        let content = if path.exists() {
+            fs::read_to_string(path)?
+        } else {
+            String::new()
+        };
+        
         let lines = if content.is_empty() {
             vec![String::new()]
         } else {
