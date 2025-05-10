@@ -4,10 +4,10 @@ version = "1.2.0"
 edition = "2021"
 
 [dependencies]
-crossterm = "0.28.1"
+crossterm = "0.29.0"
 tui = { version = "0.19", default-features = false, features = ['crossterm'] }
 ropey = "1.6"
-syntect = { version = "5.2", features = ["default-fancy"] }
+syntect = { version = "5.2", default-features = false, features = ["default-fancy"] }
 unicode-width = "0.2"
 copypasta = "0.10.1"
 toml = "0.8"
