@@ -39,7 +39,6 @@ pub struct Editor {
     ps: SyntaxSet,
     ts: ThemeSet,
     syntax: String,
-    cursor_style: Style,
     clipboard_context: crate::ClipboardWrapper,
     visual_start: (usize, usize),
     pub file_selector: Option<FileSelector>,
@@ -83,7 +82,6 @@ impl Editor {
             ps: SyntaxSet::load_defaults_newlines(),
             ts: ThemeSet::load_defaults(),
             syntax: "Plain Text".to_string(),
-            cursor_style: Style::default().fg(Color::Yellow),
             clipboard_context,
             visual_start: (0, 0),
             file_selector: None,
@@ -1845,38 +1843,9 @@ impl Editor {
             }
 
             if absolute_line_index == cursor_position.1 {
-                 let mut spans_with_cursor = Vec::new();
-                let mut current_len = 0;
-                let cursor_col_in_view = cursor_position.0.saturating_sub(horizontal_scroll);
-
-                for span in current_line_styled_spans {
-                    let span_len = span.content.len();
-                    let span_start = current_len;
-                    let span_end = current_len + span_len;
-
-                    if span_start <= cursor_col_in_view && cursor_col_in_view < span_end {
-                        let cursor_offset = cursor_col_in_view - span_start;
-                        let before = Self::safe_slice(&span.content, 0, Some(cursor_offset));
-                        let after = Self::safe_slice(&span.content, cursor_offset, None);
-                        
-                        if !before.is_empty() {
-                            spans_with_cursor.push(Span::styled(before, span.style));
-                        }
-                        spans_with_cursor.push(Span::styled("".to_string(), self.cursor_style));
-                        if !after.is_empty() {
-                            spans_with_cursor.push(Span::styled(after, span.style));
-                        }
-                    } else {
-                         spans_with_cursor.push(span);
-                    }
-                    current_len += span_len;
-                }
-                 if cursor_col_in_view >= current_len {
-                     spans_with_cursor.push(Span::styled("".to_string(), self.cursor_style));
-                }
-                 text_spans.push(Spans::from(spans_with_cursor));
+                text_spans.push(Spans::from(current_line_styled_spans));
             } else {
-                 text_spans.push(Spans::from(current_line_styled_spans));
+                text_spans.push(Spans::from(current_line_styled_spans));
             }
         }
 
