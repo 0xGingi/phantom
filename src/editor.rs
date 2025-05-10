@@ -1074,8 +1074,8 @@ impl Editor {
             }
             _ => {
                 self.debug_messages.push(format!("Unknown command: {}", command));
-                Ok(false)
-            }                
+                Ok(false)                
+            }
         }
     }
 
@@ -1567,11 +1567,11 @@ impl Editor {
                 .unwrap_or_else(|| format!("Untitled-{}", i + 1));
 
             let status_indicator = match tab.git_status {
-                Some(s) if s.contains(Status::WT_MODIFIED) | s.contains(Status::INDEX_MODIFIED) => "*", // Modified
-                Some(s) if s.contains(Status::WT_NEW) | s.contains(Status::INDEX_NEW) => "+", // New
-                Some(s) if s.contains(Status::WT_DELETED) | s.contains(Status::INDEX_DELETED) => "-", // Deleted
-                Some(s) if s.contains(Status::WT_RENAMED) | s.contains(Status::INDEX_RENAMED) => "R", // Renamed
-                Some(s) if s.contains(Status::WT_TYPECHANGE) | s.contains(Status::INDEX_TYPECHANGE) => "T", // Typechange
+                Some(s) if s.contains(Status::WT_MODIFIED) | s.contains(Status::INDEX_MODIFIED) => "*",
+                Some(s) if s.contains(Status::WT_NEW) | s.contains(Status::INDEX_NEW) => "+",
+                Some(s) if s.contains(Status::WT_DELETED) | s.contains(Status::INDEX_DELETED) => "-",
+                Some(s) if s.contains(Status::WT_RENAMED) | s.contains(Status::INDEX_RENAMED) => "R",
+                Some(s) if s.contains(Status::WT_TYPECHANGE) | s.contains(Status::INDEX_TYPECHANGE) => "T",
                 _ => "",
             };
             let title_with_status = format!("{}{}", base_title, status_indicator);
@@ -1727,10 +1727,11 @@ impl Editor {
                 if visible_start < visible_end {
                     let visible_segment_offset = visible_start - segment_start;
                     let visible_segment_len = visible_end - visible_start;
-                    let visible_segment = &segment[visible_segment_offset..visible_segment_offset + visible_segment_len];
+                    
+                    let visible_text = Self::safe_slice(segment, visible_segment_offset, Some(visible_segment_offset + visible_segment_len));
 
                     current_line_styled_spans.push(Span::styled(
-                        visible_segment.to_string(),
+                        visible_text,
                         Style::default().fg(Color::Rgb(color.r, color.g, color.b)),
                     ));
                 }
@@ -1763,17 +1764,17 @@ impl Editor {
                             if overlap_start < overlap_end {
                                 if span_start_col < overlap_start {
                                     highlighted_spans.push(Span::styled(
-                                        span.content[..(overlap_start - span_start_col)].to_string(),
+                                        Self::safe_slice(&span.content, 0, Some(overlap_start - span_start_col)),
                                         span.style,
                                     ));
                                 }
                                 highlighted_spans.push(Span::styled(
-                                    span.content[(overlap_start - span_start_col)..(overlap_end - span_start_col)].to_string(),
+                                    Self::safe_slice(&span.content, overlap_start - span_start_col, Some(overlap_end - span_start_col)),
                                      Style::default().bg(Color::DarkGray).fg(Color::White)
                                 ));
                                 if span_end_col > overlap_end {
                                      highlighted_spans.push(Span::styled(
-                                        span.content[(overlap_end - span_start_col)..].to_string(),
+                                        Self::safe_slice(&span.content, overlap_end - span_start_col, None),
                                         span.style,
                                     ));
                                 }
@@ -1810,9 +1811,9 @@ impl Editor {
                            cursor_position.0 >= span_start_abs && cursor_position.0 < span_end_abs {
                             let bracket_offset = cursor_position.0 - span_start_abs;
                             if bracket_offset > last_split {
-                                spans_with_brackets.push(Span::styled(span.content[last_split..bracket_offset].to_string(), span.style));
+                                spans_with_brackets.push(Span::styled(Self::safe_slice(&span.content, last_split, Some(bracket_offset)), span.style));
                             }
-                            spans_with_brackets.push(Span::styled(span.content[bracket_offset..bracket_offset+1].to_string(), bracket_match_style));
+                            spans_with_brackets.push(Span::styled(Self::safe_slice(&span.content, bracket_offset, Some(bracket_offset + 1)), bracket_match_style));
                             last_split = bracket_offset + 1;
                             modified = true;
                         }
@@ -1821,10 +1822,10 @@ impl Editor {
                            match_pos.0 >= span_start_abs && match_pos.0 < span_end_abs {
                             let bracket_offset = match_pos.0 - span_start_abs;
                             if bracket_offset > last_split {
-                                spans_with_brackets.push(Span::styled(span.content[last_split..bracket_offset].to_string(), span.style));
+                                spans_with_brackets.push(Span::styled(Self::safe_slice(&span.content, last_split, Some(bracket_offset)), span.style));
                             }
                             if !(cursor_bracket_visible && cursor_position == match_pos) {
-                                spans_with_brackets.push(Span::styled(span.content[bracket_offset..bracket_offset+1].to_string(), bracket_match_style));
+                                spans_with_brackets.push(Span::styled(Self::safe_slice(&span.content, bracket_offset, Some(bracket_offset + 1)), bracket_match_style));
                             }
                             last_split = bracket_offset + 1;
                             modified = true;
@@ -1832,7 +1833,7 @@ impl Editor {
 
                         if modified {
                             if last_split < span.content.len() {
-                                spans_with_brackets.push(Span::styled(span.content[last_split..].to_string(), span.style));
+                                spans_with_brackets.push(Span::styled(Self::safe_slice(&span.content, last_split, None), span.style));
                             }
                         } else {
                             spans_with_brackets.push(span);
@@ -1854,13 +1855,16 @@ impl Editor {
                     let span_end = current_len + span_len;
 
                     if span_start <= cursor_col_in_view && cursor_col_in_view < span_end {
-                         let (before, after) = span.content.split_at(cursor_col_in_view - span_start);
+                        let cursor_offset = cursor_col_in_view - span_start;
+                        let before = Self::safe_slice(&span.content, 0, Some(cursor_offset));
+                        let after = Self::safe_slice(&span.content, cursor_offset, None);
+                        
                         if !before.is_empty() {
-                            spans_with_cursor.push(Span::styled(before.to_string(), span.style));
+                            spans_with_cursor.push(Span::styled(before, span.style));
                         }
                         spans_with_cursor.push(Span::styled("".to_string(), self.cursor_style));
                         if !after.is_empty() {
-                            spans_with_cursor.push(Span::styled(after.to_string(), span.style));
+                            spans_with_cursor.push(Span::styled(after, span.style));
                         }
                     } else {
                          spans_with_cursor.push(span);
@@ -2096,5 +2100,38 @@ impl Editor {
         }
     
         None
+    }
+
+    fn safe_slice(s: &str, start_byte: usize, end_byte: Option<usize>) -> String {
+        let char_indices: Vec<_> = s.char_indices().collect();
+        
+        if char_indices.is_empty() {
+            return String::new();
+        }
+        
+        let start_char_idx = char_indices.iter()
+            .position(|(byte_idx, _)| *byte_idx >= start_byte)
+            .unwrap_or(char_indices.len());
+            
+        let end_char_idx = if let Some(end) = end_byte {
+            char_indices.iter()
+                .position(|(byte_idx, _)| *byte_idx > end)
+                .unwrap_or(char_indices.len())
+        } else {
+            char_indices.len()
+        };
+        
+        if start_char_idx < end_char_idx && start_char_idx < char_indices.len() {
+            let start_byte_pos = char_indices[start_char_idx].0;
+            let end_byte_pos = if end_char_idx < char_indices.len() {
+                char_indices[end_char_idx].0
+            } else {
+                s.len()
+            };
+            
+            s[start_byte_pos..end_byte_pos].to_string()
+        } else {
+            String::new()
+        }
     }
 } 
