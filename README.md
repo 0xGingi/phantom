@@ -90,6 +90,7 @@ If a directory is provided, phantom will enter directory navigation mode
 ### Global
 
 - `Ctrl+Q`: Quit the editor
+- `?`: Show keybinding help
 
 ### Normal Mode
 
@@ -125,6 +126,8 @@ If a directory is provided, phantom will enter directory navigation mode
 - `Ctrl+L`: Toggle line number mode (Off/Absolute/Relative/Hybrid)
 - `Ctrl+I`: Toggle auto-indentation
 - `Ctrl+J`: Toggle word wrap
+- `Shift+T`: Cycle through color themes
+- `?`: Show keybinding help
 - `Mouse Click`: Move cursor to clicked position
 - `Mouse Wheel`: Scroll up/down (3 lines)
 - `Shift+Mouse Wheel`: Scroll left/right (5 columns)
@@ -189,6 +192,15 @@ If a directory is provided, phantom will enter directory navigation mode
 - **Relative**: Shows distance from current line
 - **Hybrid**: Shows current line number + relative distances
 - Toggle modes with `Ctrl+L`
+
+### Color Themes
+- **One Dark** (default): Modern dark theme inspired by Atom/VS Code
+- **Dracula**: Popular purple and pink accent theme
+- **Solarized Dark**: Scientifically designed color scheme, easy on eyes
+- **Nord**: Arctic-inspired cool blue theme
+- **Monokai**: Classic warm colors, popular in Sublime Text
+- **Gruvbox**: Retro groove colors with warm, earthy tones
+- Cycle through themes with `Shift+T`
 
 ## Debug Output
 

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct ColorConfig {
+    pub version: Option<String>,
     pub background: String,
     pub foreground: String,
     pub cursor: String,
@@ -29,7 +30,12 @@ pub struct ColorConfig {
 
 impl ColorConfig {
     pub fn default() -> Self {
+        Self::one_dark()
+    }
+    
+    pub fn gruvbox() -> Self {
         ColorConfig {
+            version: Some("1.2.1".to_string()),
             background: "#282828".to_string(),
             foreground: "#ebdbb2".to_string(),
             cursor: "#ebdbb2".to_string(),
@@ -54,6 +60,158 @@ impl ColorConfig {
             bracket_match: "#fabd2f".to_string(),
         }
     }
+    
+    pub fn one_dark() -> Self {
+        ColorConfig {
+            version: Some("1.2.1".to_string()),
+            background: "#282c34".to_string(),
+            foreground: "#abb2bf".to_string(),
+            cursor: "#528bff".to_string(),
+            selection: "#3e4451".to_string(),
+            comment: "#5c6370".to_string(),
+            keyword: "#c678dd".to_string(),
+            string: "#98c379".to_string(),
+            function: "#61afef".to_string(),
+            number: "#d19a66".to_string(),
+            minimap_highlight: "#3e4451".to_string(),
+            minimap_background: "#21252b".to_string(),
+            minimap_content: "#5c6370".to_string(),
+            minimap_border: "#3e4451".to_string(),
+            tab_active: "#61afef".to_string(),
+            tab_inactive: "#5c6370".to_string(),
+            tab_background: "#282c34".to_string(),
+            file_selector_background: "#3e4451".to_string(),
+            file_selector_foreground: "#abb2bf".to_string(),
+            file_selector_highlight: "#528bff".to_string(),
+            file_selector_border: "#528bff".to_string(),
+            line_number: "#636d83".to_string(),
+            bracket_match: "#528bff".to_string(),
+        }
+    }
+    
+    pub fn dracula() -> Self {
+        ColorConfig {
+            version: Some("1.2.1".to_string()),
+            background: "#282a36".to_string(),
+            foreground: "#f8f8f2".to_string(),
+            cursor: "#ff79c6".to_string(),
+            selection: "#44475a".to_string(),
+            comment: "#6272a4".to_string(),
+            keyword: "#ff79c6".to_string(),
+            string: "#f1fa8c".to_string(),
+            function: "#50fa7b".to_string(),
+            number: "#bd93f9".to_string(),
+            minimap_highlight: "#44475a".to_string(),
+            minimap_background: "#21222c".to_string(),
+            minimap_content: "#6272a4".to_string(),
+            minimap_border: "#44475a".to_string(),
+            tab_active: "#ff79c6".to_string(),
+            tab_inactive: "#6272a4".to_string(),
+            tab_background: "#282a36".to_string(),
+            file_selector_background: "#44475a".to_string(),
+            file_selector_foreground: "#f8f8f2".to_string(),
+            file_selector_highlight: "#ff79c6".to_string(),
+            file_selector_border: "#ff79c6".to_string(),
+            line_number: "#6272a4".to_string(),
+            bracket_match: "#ff79c6".to_string(),
+        }
+    }
+    
+    pub fn solarized_dark() -> Self {
+        ColorConfig {
+            version: Some("1.2.1".to_string()),
+            background: "#002b36".to_string(),
+            foreground: "#839496".to_string(),
+            cursor: "#2aa198".to_string(),
+            selection: "#073642".to_string(),
+            comment: "#586e75".to_string(),
+            keyword: "#859900".to_string(),
+            string: "#2aa198".to_string(),
+            function: "#268bd2".to_string(),
+            number: "#d33682".to_string(),
+            minimap_highlight: "#073642".to_string(),
+            minimap_background: "#00212b".to_string(),
+            minimap_content: "#586e75".to_string(),
+            minimap_border: "#073642".to_string(),
+            tab_active: "#2aa198".to_string(),
+            tab_inactive: "#586e75".to_string(),
+            tab_background: "#002b36".to_string(),
+            file_selector_background: "#073642".to_string(),
+            file_selector_foreground: "#839496".to_string(),
+            file_selector_highlight: "#2aa198".to_string(),
+            file_selector_border: "#2aa198".to_string(),
+            line_number: "#586e75".to_string(),
+            bracket_match: "#2aa198".to_string(),
+        }
+    }
+    
+    pub fn nord() -> Self {
+        ColorConfig {
+            version: Some("1.2.1".to_string()),
+            background: "#2e3440".to_string(),
+            foreground: "#d8dee9".to_string(),
+            cursor: "#88c0d0".to_string(),
+            selection: "#434c5e".to_string(),
+            comment: "#616e88".to_string(),
+            keyword: "#81a1c1".to_string(),
+            string: "#a3be8c".to_string(),
+            function: "#88c0d0".to_string(),
+            number: "#b48ead".to_string(),
+            minimap_highlight: "#434c5e".to_string(),
+            minimap_background: "#3b4252".to_string(),
+            minimap_content: "#616e88".to_string(),
+            minimap_border: "#434c5e".to_string(),
+            tab_active: "#88c0d0".to_string(),
+            tab_inactive: "#616e88".to_string(),
+            tab_background: "#2e3440".to_string(),
+            file_selector_background: "#434c5e".to_string(),
+            file_selector_foreground: "#d8dee9".to_string(),
+            file_selector_highlight: "#88c0d0".to_string(),
+            file_selector_border: "#88c0d0".to_string(),
+            line_number: "#616e88".to_string(),
+            bracket_match: "#88c0d0".to_string(),
+        }
+    }
+    
+    pub fn monokai() -> Self {
+        ColorConfig {
+            version: Some("1.2.1".to_string()),
+            background: "#272822".to_string(),
+            foreground: "#f8f8f2".to_string(),
+            cursor: "#f92672".to_string(),
+            selection: "#49483e".to_string(),
+            comment: "#75715e".to_string(),
+            keyword: "#f92672".to_string(),
+            string: "#e6db74".to_string(),
+            function: "#a6e22e".to_string(),
+            number: "#ae81ff".to_string(),
+            minimap_highlight: "#49483e".to_string(),
+            minimap_background: "#1e1f1c".to_string(),
+            minimap_content: "#75715e".to_string(),
+            minimap_border: "#49483e".to_string(),
+            tab_active: "#f92672".to_string(),
+            tab_inactive: "#75715e".to_string(),
+            tab_background: "#272822".to_string(),
+            file_selector_background: "#49483e".to_string(),
+            file_selector_foreground: "#f8f8f2".to_string(),
+            file_selector_highlight: "#f92672".to_string(),
+            file_selector_border: "#f92672".to_string(),
+            line_number: "#75715e".to_string(),
+            bracket_match: "#f92672".to_string(),
+        }
+    }
+    
+    pub fn get_theme(name: &str) -> Self {
+        match name.to_lowercase().as_str() {
+            "gruvbox" => Self::gruvbox(),
+            "one_dark" | "onedark" => Self::one_dark(),
+            "dracula" => Self::dracula(),
+            "solarized_dark" | "solarized-dark" => Self::solarized_dark(),
+            "nord" => Self::nord(),
+            "monokai" => Self::monokai(),
+            _ => Self::one_dark(), // Default fallback
+        }
+    }
 
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(json)
@@ -62,10 +220,21 @@ impl ColorConfig {
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }
+    
+    /// Merge user config with default config, adding any missing fields
+    pub fn merge_with_defaults(mut self) -> Self {
+        let defaults = Self::default();
+        
+        // For colors, we typically want to keep user values, but this could be extended
+        // to add new color fields that didn't exist in older versions
+        self.version = defaults.version;
+        self
+    }
 }
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Keybindings {
+    pub version: Option<String>,
     pub normal_mode: HashMap<String, String>,
     pub insert_mode: HashMap<String, String>,
     pub visual_mode: HashMap<String, String>,
@@ -78,6 +247,7 @@ pub struct Keybindings {
 impl Keybindings {
     pub fn default() -> Self {
         Keybindings {
+            version: Some("1.2.1".to_string()),
             normal_mode: [
                 ("dd".to_string(), "delete_line".to_string()),
                 ("i".to_string(), "enter_insert_mode".to_string()),
@@ -123,6 +293,8 @@ impl Keybindings {
                 ("Ctrl+l".to_string(), "toggle_line_numbers".to_string()),
                 ("Ctrl+j".to_string(), "toggle_word_wrap".to_string()),
                 ("Ctrl+i".to_string(), "toggle_auto_indent".to_string()),
+                ("?".to_string(), "toggle_help".to_string()),
+                ("Shift+T".to_string(), "cycle_theme".to_string()),
             ].iter().cloned().collect(),
             insert_mode: [
                 ("Esc".to_string(), "exit_insert_mode".to_string()),
@@ -160,5 +332,37 @@ impl Keybindings {
             ].iter().cloned().collect(),
             tab_mode: HashMap::new(),
         }
+    }
+    
+    /// Merge user config with default config, adding any missing keys
+    pub fn merge_with_defaults(mut self) -> Self {
+        let defaults = Self::default();
+        
+        // Merge each mode's keybindings
+        for (key, value) in defaults.normal_mode {
+            self.normal_mode.entry(key).or_insert(value);
+        }
+        for (key, value) in defaults.insert_mode {
+            self.insert_mode.entry(key).or_insert(value);
+        }
+        for (key, value) in defaults.visual_mode {
+            self.visual_mode.entry(key).or_insert(value);
+        }
+        for (key, value) in defaults.command_mode {
+            self.command_mode.entry(key).or_insert(value);
+        }
+        for (key, value) in defaults.file_select_mode {
+            self.file_select_mode.entry(key).or_insert(value);
+        }
+        for (key, value) in defaults.search_mode {
+            self.search_mode.entry(key).or_insert(value);
+        }
+        for (key, value) in defaults.tab_mode {
+            self.tab_mode.entry(key).or_insert(value);
+        }
+        
+        // Update version
+        self.version = defaults.version;
+        self
     }
 } 

@@ -53,6 +53,8 @@ pub struct Editor {
     indent_size: usize,
     use_tabs: bool,
     word_wrap: bool,
+    show_help: bool,
+    current_theme: String,
     scroll_offset: usize,
     horizontal_scroll: usize,
     keybindings: Keybindings,
@@ -102,6 +104,8 @@ impl Editor {
             indent_size: 4,
             use_tabs: false,
             word_wrap: false,
+            show_help: false,
+            current_theme: "one_dark".to_string(),
             scroll_offset: 0,
             horizontal_scroll: 0,
             keybindings,
@@ -409,11 +413,34 @@ impl Editor {
     
         if !config_path.exists() {
             Self::create_default_color_config(&config_path)?;
+            return Ok(ColorConfig::default());
         }
     
         let config_str = fs::read_to_string(&config_path)?;
-        let config = ColorConfig::from_json(&config_str)?;
-        Ok(config)
+        match ColorConfig::from_json(&config_str) {
+            Ok(mut config) => {
+                // Check if config needs updating
+                let current_version = env!("CARGO_PKG_VERSION");
+                let needs_update = config.version.as_ref().map_or(true, |v| v != current_version);
+                
+                if needs_update {
+                    // Merge with defaults to add any missing color fields
+                    config = config.merge_with_defaults();
+                    // Save the updated config
+                    if let Ok(updated_config) = config.to_json() {
+                        let _ = fs::write(&config_path, updated_config);
+                    }
+                }
+                Ok(config)
+            }
+            Err(_) => {
+                // If parsing fails, backup old config and create new one
+                let backup_path = config_path.with_extension("json.backup");
+                let _ = fs::copy(&config_path, backup_path);
+                Self::create_default_color_config(&config_path)?;
+                Ok(ColorConfig::default())
+            }
+        }
     }
     
     fn create_default_color_config(config_path: &PathBuf) -> Result<(), Box<dyn Error>> {
@@ -538,11 +565,34 @@ impl Editor {
     
         if !config_path.exists() {
             Self::create_default_config(&config_path)?;
+            return Ok(Keybindings::default());
         }
     
         let config_str = fs::read_to_string(&config_path)?;
-        let config: Keybindings = toml::from_str(&config_str)?;
-        Ok(config)
+        match toml::from_str::<Keybindings>(&config_str) {
+            Ok(mut config) => {
+                // Check if config needs updating
+                let current_version = env!("CARGO_PKG_VERSION");
+                let needs_update = config.version.as_ref().map_or(true, |v| v != current_version);
+                
+                if needs_update {
+                    // Merge with defaults to add any missing keybindings
+                    config = config.merge_with_defaults();
+                    // Save the updated config
+                    if let Ok(updated_config) = toml::to_string_pretty(&config) {
+                        let _ = fs::write(&config_path, updated_config);
+                    }
+                }
+                Ok(config)
+            }
+            Err(_) => {
+                // If parsing fails, backup old config and create new one
+                let backup_path = config_path.with_extension("toml.backup");
+                let _ = fs::copy(&config_path, backup_path);
+                Self::create_default_config(&config_path)?;
+                Ok(Keybindings::default())
+            }
+        }
     }
             
     fn key_event_to_string(key: event::KeyEvent) -> String {
@@ -664,6 +714,24 @@ impl Editor {
                     Event::Key(key) => {
                         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('q') {
                             return Ok(true);
+                        }
+                        
+                        // Handle help overlay
+                        if self.show_help {
+                            match key.code {
+                                KeyCode::Esc => {
+                                    self.show_help = false;
+                                    continue;
+                                }
+                                KeyCode::Char('?') => {
+                                    self.show_help = false;
+                                    continue;
+                                }
+                                _ => {
+                                    // Ignore other keys when help is shown
+                                    continue;
+                                }
+                            }
                         }
 
                         self.debug_messages.push(format!("Key pressed: {:?}", key));
@@ -1028,6 +1096,14 @@ impl Editor {
             "toggle_auto_indent" => {
                 self.auto_indent = !self.auto_indent;
                 self.debug_messages.push(format!("Auto indent: {}", if self.auto_indent { "ON" } else { "OFF" }));
+                Ok(false)
+            },
+            "toggle_help" => {
+                self.show_help = !self.show_help;
+                Ok(false)
+            },
+            "cycle_theme" => {
+                self.cycle_theme();
                 Ok(false)
             },
             "exit_insert_mode" => {
@@ -2277,6 +2353,11 @@ impl Editor {
                  self.render_minimap(f, clipped_minimap_area);
              }
         }
+        
+        // Render help overlay if shown
+        if self.show_help {
+            self.render_help_overlay(f);
+        }
     }
 
     fn enter_search_mode(&mut self) {
@@ -2541,7 +2622,98 @@ impl Editor {
         
         self.ensure_cursor_in_bounds();
     }
+    
+    fn cycle_theme(&mut self) {
+        let themes = ["one_dark", "dracula", "solarized_dark", "nord", "monokai", "gruvbox"];
+        let current_index = themes.iter().position(|&t| t == self.current_theme).unwrap_or(0);
+        let next_index = (current_index + 1) % themes.len();
+        self.current_theme = themes[next_index].to_string();
+        
+        // Apply the new theme
+        self.color_config = ColorConfig::get_theme(&self.current_theme);
+        
+        // Save the new theme to config
+        if let Some(config_dir) = Self::get_config_dir() {
+            let config_path = config_dir.join("colors.json");
+            if let Ok(config_json) = self.color_config.to_json() {
+                let _ = std::fs::write(config_path, config_json);
+            }
+        }
+        
+        self.debug_messages.push(format!("Theme changed to: {}", self.current_theme));
+    }
 
+    fn render_help_overlay<B: tui::backend::Backend>(&self, f: &mut Frame<B>) {
+        let area = f.size();
+        
+        // Create a centered popup
+        let popup_width = area.width.saturating_sub(4).min(80);
+        let popup_height = area.height.saturating_sub(4).min(30);
+        let popup_x = (area.width - popup_width) / 2;
+        let popup_y = (area.height - popup_height) / 2;
+        
+        let popup_area = Rect {
+            x: popup_x,
+            y: popup_y,
+            width: popup_width,
+            height: popup_height,
+        };
+        
+        let help_text = vec![
+            Spans::from(Span::styled("📖 Phantom Editor - Keybindings Help", Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow))),
+            Spans::from(""),
+            Spans::from(Span::styled("🌐 Global", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
+            Spans::from("  Ctrl+Q       Quit editor"),
+            Spans::from("  ?            Toggle this help"),
+            Spans::from(""),
+            Spans::from(Span::styled("📝 Normal Mode", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
+            Spans::from("  i/Insert     Enter Insert mode    a            Append after cursor"),
+            Spans::from("  o            Open line below      O            Open line above"),
+            Spans::from("  dd           Delete line          yy           Yank (copy) line"),
+            Spans::from("  p            Paste after line     v            Enter Visual mode"),
+            Spans::from("  :            Command mode         /            Search mode"),
+            Spans::from("  n/N          Next/prev search     Ctrl+U/R     Undo/Redo"),
+            Spans::from(""),
+            Spans::from(Span::styled("📂 File & Tabs", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
+            Spans::from("  Ctrl+T       New tab              Ctrl+W       Close tab"),
+            Spans::from("  F1-F9        Switch to tab 1-9    Tab          Next tab"),
+            Spans::from("  Ctrl+E       Directory navigation"),
+            Spans::from(""),
+            Spans::from(Span::styled("🎛️  View & Display", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
+            Spans::from("  Ctrl+M       Toggle minimap       Ctrl+B       Toggle debug"),
+            Spans::from("  Ctrl+L       Line number modes    Ctrl+J       Toggle word wrap"),
+            Spans::from("  Ctrl+I       Toggle auto-indent   Shift+T Cycle themes"),
+            Spans::from(""),
+            Spans::from(Span::styled("🔍 Search Mode", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
+            Spans::from("  Alt+I        Toggle case sensitive Alt+R        Toggle regex"),
+            Spans::from("  Enter        Execute search       Esc          Exit search"),
+            Spans::from(""),
+            Spans::from(Span::styled("🖱️  Mouse Support", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
+            Spans::from("  Click        Move cursor          Wheel        Scroll up/down"),
+            Spans::from("  Shift+Wheel  Scroll left/right    Drag         Select text"),
+            Spans::from(""),
+            Spans::from(Span::styled("📋 Commands (:)", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
+            Spans::from("  :w           Save file            :w filename  Save as"),
+            Spans::from("  :q           Quit                 :wq          Save & quit"),
+            Spans::from("  :e filename  Open file"),
+            Spans::from(""),
+            Spans::from(Span::styled("Press ? or Esc to close this help", Style::default().add_modifier(Modifier::ITALIC).fg(Color::Gray))),
+        ];
+        
+        let help_paragraph = Paragraph::new(help_text)
+            .block(Block::default()
+                .borders(Borders::ALL)
+                .title("Help")
+                .border_style(Style::default().fg(Color::Blue)))
+            .style(Style::default()
+                .bg(Color::Black)
+                .fg(Color::White))
+            .scroll((0, 0));
+            
+        f.render_widget(tui::widgets::Clear, popup_area);
+        f.render_widget(help_paragraph, popup_area);
+    }
+    
     fn safe_slice(s: &str, start_byte: usize, end_byte: Option<usize>) -> String {
         let char_indices: Vec<_> = s.char_indices().collect();
         
