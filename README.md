@@ -2,7 +2,8 @@
 
 phantom is a lightweight, terminal-based linux text editor written in Rust. It combines the simplicity of a basic text editor with some powerful features inspired by Vim.
 
-<img src="https://github.com/user-attachments/assets/9bb52446-3326-44d1-9c04-cfedc089f153">
+![image](https://github.com/user-attachments/assets/3f71a03d-68c3-4be0-b199-9e40a799d577)
+
 
 ## Features
 
@@ -21,8 +22,7 @@ phantom is a lightweight, terminal-based linux text editor written in Rust. It c
 - Smart auto-indentation
 - Enhanced search with regex and case-insensitive options
 - Intelligent undo/redo with operation grouping
-- Mouse support (click-to-position, scroll wheel)
-- Horizontal scrolling with Shift+scroll wheel
+- Swappable Themes
 
 ## Cross-Plaform Status
 
