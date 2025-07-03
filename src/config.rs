@@ -35,7 +35,7 @@ impl ColorConfig {
     
     pub fn gruvbox() -> Self {
         ColorConfig {
-            version: Some("1.2.1".to_string()),
+            version: Some("2.0.0".to_string()),
             background: "#282828".to_string(),
             foreground: "#ebdbb2".to_string(),
             cursor: "#ebdbb2".to_string(),
@@ -63,7 +63,7 @@ impl ColorConfig {
     
     pub fn one_dark() -> Self {
         ColorConfig {
-            version: Some("1.2.1".to_string()),
+            version: Some("2.0.0".to_string()),
             background: "#282c34".to_string(),
             foreground: "#abb2bf".to_string(),
             cursor: "#528bff".to_string(),
@@ -91,7 +91,7 @@ impl ColorConfig {
     
     pub fn dracula() -> Self {
         ColorConfig {
-            version: Some("1.2.1".to_string()),
+            version: Some("2.0.0".to_string()),
             background: "#282a36".to_string(),
             foreground: "#f8f8f2".to_string(),
             cursor: "#ff79c6".to_string(),
@@ -119,7 +119,7 @@ impl ColorConfig {
     
     pub fn solarized_dark() -> Self {
         ColorConfig {
-            version: Some("1.2.1".to_string()),
+            version: Some("2.0.0".to_string()),
             background: "#002b36".to_string(),
             foreground: "#839496".to_string(),
             cursor: "#2aa198".to_string(),
@@ -147,7 +147,7 @@ impl ColorConfig {
     
     pub fn nord() -> Self {
         ColorConfig {
-            version: Some("1.2.1".to_string()),
+            version: Some("2.0.0".to_string()),
             background: "#2e3440".to_string(),
             foreground: "#d8dee9".to_string(),
             cursor: "#88c0d0".to_string(),
@@ -175,7 +175,7 @@ impl ColorConfig {
     
     pub fn monokai() -> Self {
         ColorConfig {
-            version: Some("1.2.1".to_string()),
+            version: Some("2.0.0".to_string()),
             background: "#272822".to_string(),
             foreground: "#f8f8f2".to_string(),
             cursor: "#f92672".to_string(),
@@ -247,7 +247,7 @@ pub struct Keybindings {
 impl Keybindings {
     pub fn default() -> Self {
         Keybindings {
-            version: Some("1.2.1".to_string()),
+            version: Some("2.0.0".to_string()),
             normal_mode: [
                 ("dd".to_string(), "delete_line".to_string()),
                 ("i".to_string(), "enter_insert_mode".to_string()),
