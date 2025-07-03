@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::time::SystemTime;
 use syntect::parsing::SyntaxSet;
 use git2::{Repository, Status};
 
@@ -11,6 +12,15 @@ pub struct EditOperation {
     pub cursor_position: (usize, usize),
     pub scroll_offset: usize,
     pub horizontal_scroll: usize,
+    pub timestamp: SystemTime,
+    pub operation_type: EditType,
+}
+
+#[derive(Clone, PartialEq)]
+pub enum EditType {
+    Insert,
+    Delete,
+    Other,
 }
 
 pub struct Tab {
@@ -22,6 +32,8 @@ pub struct Tab {
     pub syntax: String,
     pub undo_stack: VecDeque<EditOperation>,
     pub redo_stack: VecDeque<EditOperation>,
+    pub last_edit_time: SystemTime,
+    pub last_edit_type: EditType,
     pub git_status: Option<Status>,
     pub git_branch: Option<String>,
 }
@@ -37,6 +49,8 @@ impl Tab {
             syntax: "Plain Text".to_string(),
             undo_stack: VecDeque::new(),
             redo_stack: VecDeque::new(),
+            last_edit_time: SystemTime::now(),
+            last_edit_type: EditType::Other,
             git_status: None,
             git_branch: None,
         }
@@ -75,6 +89,8 @@ impl Tab {
             syntax,
             undo_stack: VecDeque::new(),
             redo_stack: VecDeque::new(),
+            last_edit_time: SystemTime::now(),
+            last_edit_type: EditType::Other,
             git_status,
             git_branch,
         };

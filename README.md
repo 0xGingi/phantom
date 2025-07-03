@@ -18,6 +18,11 @@ phantom is a lightweight, terminal-based linux text editor written in Rust. It c
 - Tabs
 - Minimap
 - Git status
+- Smart auto-indentation
+- Enhanced search with regex and case-insensitive options
+- Intelligent undo/redo with operation grouping
+- Mouse support (click-to-position, scroll wheel)
+- Horizontal scrolling with Shift+scroll wheel
 
 ## Cross-Plaform Status
 
@@ -117,11 +122,17 @@ If a directory is provided, phantom will enter directory navigation mode
 - `F1`-`F9`: Switch to Tab 1-9
 - `Tab`: Swap Between Tabs
 - `Ctrl+M`: Toggle Minimap
+- `Ctrl+L`: Toggle line number mode (Off/Absolute/Relative/Hybrid)
+- `Ctrl+I`: Toggle auto-indentation
+- `Ctrl+J`: Toggle word wrap
+- `Mouse Click`: Move cursor to clicked position
+- `Mouse Wheel`: Scroll up/down (3 lines)
+- `Shift+Mouse Wheel`: Scroll left/right (5 columns)
 
 ### Insert Mode
 
 - `Esc`: Return to Normal mode
-- `Enter`: Insert a new line
+- `Enter`: Insert a new line with smart auto-indentation
 - `Backspace`: Delete the character before the cursor
 - Any character key: Insert the character at the cursor position
 
@@ -143,6 +154,41 @@ If a directory is provided, phantom will enter directory navigation mode
 
 - `Enter`: Perform search and return to Normal mode
 - `Esc`: Cancel search and return to Normal mode
+- `Alt+I`: Toggle case-sensitive search
+- `Alt+R`: Toggle regex search mode
+- Any character: Live search as you type
+
+## Enhanced Features
+
+### Smart Auto-Indentation
+- Automatically indents new lines based on the previous line
+- Recognizes common programming constructs (if, for, while, brackets)
+- Supports both tabs and spaces with configurable indent size
+- Toggle with `Ctrl+I`
+
+### Advanced Search
+- **Live Search**: Results update as you type
+- **Case Sensitivity**: Toggle with `Alt+I` in search mode
+- **Regex Support**: Toggle with `Alt+R` in search mode
+- **Multiple Matches**: Finds all occurrences in the file
+- Use `n` and `N` to navigate between search results
+
+### Intelligent Undo/Redo
+- Groups consecutive character insertions/deletions into logical operations
+- Time-based grouping (operations within 1 second)
+- More intuitive undo behavior for better editing flow
+
+### Mouse Support
+- **Click to Position**: Click anywhere in the editor to move cursor
+- **Vertical Scrolling**: Mouse wheel scrolls up/down
+- **Horizontal Scrolling**: Shift+mouse wheel scrolls left/right
+- **Text Selection**: Drag to select text, right-click to copy
+
+### Line Numbers
+- **Absolute**: Shows actual line numbers (1, 2, 3...)
+- **Relative**: Shows distance from current line
+- **Hybrid**: Shows current line number + relative distances
+- Toggle modes with `Ctrl+L`
 
 ## Debug Output
 

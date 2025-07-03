@@ -121,6 +121,8 @@ impl Keybindings {
                 ("PageUp".to_string(), "page_up".to_string()),
                 ("PageDown".to_string(), "page_down".to_string()),
                 ("Ctrl+l".to_string(), "toggle_line_numbers".to_string()),
+                ("Ctrl+j".to_string(), "toggle_word_wrap".to_string()),
+                ("Ctrl+i".to_string(), "toggle_auto_indent".to_string()),
             ].iter().cloned().collect(),
             insert_mode: [
                 ("Esc".to_string(), "exit_insert_mode".to_string()),

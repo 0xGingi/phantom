@@ -2,7 +2,7 @@ use crate::{
     config::{ColorConfig, Keybindings},
     file_selector::FileSelector,
     mode::{Mode, LineNumberMode},
-    tab::{EditOperation, Tab},
+    tab::{EditOperation, Tab, EditType},
     ui,
 };
 use crossterm::{
@@ -28,6 +28,7 @@ use syntect::parsing::SyntaxSet;
 use copypasta::ClipboardProvider;
 use dirs;
 use git2::Status;
+use regex;
 
 pub struct Editor {
     content: Vec<String>,
@@ -46,6 +47,12 @@ pub struct Editor {
     search_query: String,
     search_results: Vec<(usize, usize)>,
     current_search_index: usize,
+    search_case_sensitive: bool,
+    search_regex_mode: bool,
+    auto_indent: bool,
+    indent_size: usize,
+    use_tabs: bool,
+    word_wrap: bool,
     scroll_offset: usize,
     horizontal_scroll: usize,
     keybindings: Keybindings,
@@ -89,6 +96,12 @@ impl Editor {
             search_query: String::new(),
             search_results: Vec::new(),
             current_search_index: 0,
+            search_case_sensitive: false,
+            search_regex_mode: false,
+            auto_indent: true,
+            indent_size: 4,
+            use_tabs: false,
+            word_wrap: false,
             scroll_offset: 0,
             horizontal_scroll: 0,
             keybindings,
@@ -414,19 +427,55 @@ impl Editor {
     }
     
     fn save_state(&mut self) {
+        self.save_state_with_type(EditType::Other);
+    }
+    
+    fn save_state_with_type(&mut self, edit_type: EditType) {
         if self.active_tab >= self.tabs.len() {
             return;
         }
         let tab_index = self.active_tab;
         let tab = &mut self.tabs[tab_index];
-        let operation = EditOperation {
-            content: tab.content.clone(),
-            cursor_position: tab.cursor_position,
-            scroll_offset: tab.scroll_offset,
-            horizontal_scroll: tab.horizontal_scroll,
+        let now = std::time::SystemTime::now();
+        
+        // Check if we should group this operation with the previous one
+        let should_group = if let Some(last_op) = tab.undo_stack.front() {
+            // Group if:
+            // 1. Same operation type
+            // 2. Less than 1 second apart
+            // 3. Both are insert/delete operations
+            edit_type == last_op.operation_type &&
+            edit_type != EditType::Other &&
+            last_op.timestamp.elapsed().unwrap_or(std::time::Duration::from_secs(2)) < std::time::Duration::from_secs(1)
+        } else {
+            false
         };
-        tab.undo_stack.push_front(operation);
+        
+        if should_group {
+            // Update the existing operation instead of creating a new one
+            if let Some(last_op) = tab.undo_stack.front_mut() {
+                last_op.content = tab.content.clone();
+                last_op.cursor_position = tab.cursor_position;
+                last_op.scroll_offset = tab.scroll_offset;
+                last_op.horizontal_scroll = tab.horizontal_scroll;
+                last_op.timestamp = now;
+            }
+        } else {
+            // Create a new undo operation
+            let operation = EditOperation {
+                content: tab.content.clone(),
+                cursor_position: tab.cursor_position,
+                scroll_offset: tab.scroll_offset,
+                horizontal_scroll: tab.horizontal_scroll,
+                timestamp: now,
+                operation_type: edit_type.clone(),
+            };
+            tab.undo_stack.push_front(operation);
+        }
+        
         tab.redo_stack.clear();
+        tab.last_edit_time = now;
+        tab.last_edit_type = edit_type;
 
         if tab.undo_stack.len() > 100 {
             tab.undo_stack.pop_back();
@@ -444,6 +493,8 @@ impl Editor {
                 cursor_position: tab.cursor_position,
                 scroll_offset: tab.scroll_offset,
                 horizontal_scroll: tab.horizontal_scroll,
+                timestamp: std::time::SystemTime::now(),
+                operation_type: EditType::Other,
             };
             tab.redo_stack.push_front(current_state);
 
@@ -467,6 +518,8 @@ impl Editor {
                 cursor_position: tab.cursor_position,
                 scroll_offset: tab.scroll_offset,
                 horizontal_scroll: tab.horizontal_scroll,
+                timestamp: std::time::SystemTime::now(),
+                operation_type: EditType::Other,
             };
             tab.undo_stack.push_front(current_state);
 
@@ -592,10 +645,18 @@ impl Editor {
                                 self.end_mouse_selection();
                             }
                             MouseEventKind::ScrollUp => {
-                                self.scroll_up(3); // Scroll up 3 lines
+                                if mouse_event.modifiers.contains(KeyModifiers::SHIFT) {
+                                    self.scroll_left(5); // Horizontal scroll left
+                                } else {
+                                    self.scroll_up(3); // Vertical scroll up
+                                }
                             }
                             MouseEventKind::ScrollDown => {
-                                self.scroll_down(3); // Scroll down 3 lines
+                                if mouse_event.modifiers.contains(KeyModifiers::SHIFT) {
+                                    self.scroll_right(5); // Horizontal scroll right
+                                } else {
+                                    self.scroll_down(3); // Vertical scroll down
+                                }
                             }
                             _ => {}
                         }
@@ -959,6 +1020,16 @@ impl Editor {
                 Ok(false)
             },
             "toggle_minimap" => self.toggle_minimap(),
+            "toggle_word_wrap" => {
+                self.word_wrap = !self.word_wrap;
+                self.debug_messages.push(format!("Word wrap: {}", if self.word_wrap { "ON" } else { "OFF" }));
+                Ok(false)
+            },
+            "toggle_auto_indent" => {
+                self.auto_indent = !self.auto_indent;
+                self.debug_messages.push(format!("Auto indent: {}", if self.auto_indent { "ON" } else { "OFF" }));
+                Ok(false)
+            },
             "exit_insert_mode" => {
                 self.mode = Mode::Normal;
                 Ok(false)
@@ -1293,7 +1364,7 @@ impl Editor {
         if self.active_tab >= self.tabs.len() {
             return;
         }
-        self.save_state();
+        self.save_state_with_type(EditType::Insert);
         let tab = &mut self.tabs[self.active_tab];
         if tab.content.is_empty() {
             tab.content.push(String::new());
@@ -1311,24 +1382,69 @@ impl Editor {
     }
 
     fn insert_newline(&mut self) {
-        self.save_state();
+        self.save_state_with_type(EditType::Insert);
         let tab = &mut self.tabs[self.active_tab];
         let (x, y) = tab.cursor_position;
     
         let current_line = &mut tab.content[y];
-    
-        let leading_whitespace = current_line.chars()
-            .take_while(|c| c.is_whitespace())
-            .collect::<String>();
-    
         let rest_of_line = current_line.split_off(x);
-    
-        let mut new_line = leading_whitespace.clone();
+        
+        let mut new_line_indent = String::new();
+        
+        if self.auto_indent {
+            // Get the current line's indentation
+            let current_line_ref = &tab.content[y];
+            let leading_whitespace = current_line_ref.chars()
+                .take_while(|c| c.is_whitespace())
+                .collect::<String>();
+            
+            new_line_indent = leading_whitespace.clone();
+            
+            // Smart indentation for common programming constructs
+            let trimmed_line = current_line_ref.trim();
+            let should_increase_indent = trimmed_line.ends_with('{') || 
+                                       trimmed_line.ends_with('[') || 
+                                       trimmed_line.ends_with('(') ||
+                                       trimmed_line.ends_with(':') ||
+                                       (trimmed_line.starts_with("if ") && !trimmed_line.contains('{')) ||
+                                       (trimmed_line.starts_with("for ") && !trimmed_line.contains('{')) ||
+                                       (trimmed_line.starts_with("while ") && !trimmed_line.contains('{')) ||
+                                       (trimmed_line.starts_with("else") && !trimmed_line.contains('{'));
+            
+            if should_increase_indent {
+                if self.use_tabs {
+                    new_line_indent.push('\t');
+                } else {
+                    new_line_indent.push_str(&" ".repeat(self.indent_size));
+                }
+            }
+            
+            // Handle closing brackets - decrease indentation
+            let rest_trimmed = rest_of_line.trim_start();
+            if rest_trimmed.starts_with('}') || rest_trimmed.starts_with(']') || rest_trimmed.starts_with(')') {
+                // Remove one level of indentation from new line
+                if self.use_tabs {
+                    if new_line_indent.ends_with('\t') {
+                        new_line_indent.pop();
+                    }
+                } else {
+                    let spaces_to_remove = self.indent_size.min(new_line_indent.len());
+                    if new_line_indent.ends_with(&" ".repeat(spaces_to_remove)) {
+                        for _ in 0..spaces_to_remove {
+                            if new_line_indent.ends_with(' ') {
+                                new_line_indent.pop();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        let mut new_line = new_line_indent.clone();
         new_line.push_str(&rest_of_line);
     
         tab.content.insert(y + 1, new_line);
-    
-        tab.cursor_position = (leading_whitespace.len(), y + 1);
+        tab.cursor_position = (new_line_indent.len(), y + 1);
     
         self.ensure_cursor_visible(); 
     }
@@ -1371,7 +1487,7 @@ impl Editor {
         if self.active_tab >= self.tabs.len() {
             return;
         }
-        self.save_state();
+        self.save_state_with_type(EditType::Delete);
         let tab = &mut self.tabs[self.active_tab];
         if tab.content.is_empty() {
             return;
@@ -1400,7 +1516,7 @@ impl Editor {
         if self.active_tab >= self.tabs.len() {
             return;
         }
-        self.save_state();
+        self.save_state_with_type(EditType::Delete);
         let tab = &mut self.tabs[self.active_tab];
         if tab.content.is_empty() || tab.cursor_position.1 >= tab.content.len() {
             return;
@@ -2172,17 +2288,57 @@ impl Editor {
 
     fn perform_search(&mut self) {
         self.search_results.clear();
+        if self.search_query.is_empty() {
+            return;
+        }
+        
         let tab = &self.tabs[self.active_tab];
-        for (line_num, line) in tab.content.iter().enumerate() {
-            if let Some(col) = line.to_lowercase().find(&self.search_query.to_lowercase()) {
-                self.search_results.push((line_num, col));
+        
+        if self.search_regex_mode {
+            // Regex search
+            if let Ok(regex) = regex::Regex::new(&self.search_query) {
+                for (line_num, line) in tab.content.iter().enumerate() {
+                    for mat in regex.find_iter(line) {
+                        self.search_results.push((line_num, mat.start()));
+                    }
+                }
+            } else {
+                self.debug_messages.push("Invalid regex pattern".to_string());
+                return;
+            }
+        } else {
+            // Simple text search
+            let search_text = if self.search_case_sensitive {
+                self.search_query.clone()
+            } else {
+                self.search_query.to_lowercase()
+            };
+            
+            for (line_num, line) in tab.content.iter().enumerate() {
+                let line_text = if self.search_case_sensitive {
+                    line.clone()
+                } else {
+                    line.to_lowercase()
+                };
+                
+                let mut start = 0;
+                while let Some(pos) = line_text[start..].find(&search_text) {
+                    self.search_results.push((line_num, start + pos));
+                    start += pos + 1;
+                }
             }
         }
+        
         self.current_search_index = 0;
         if !self.search_results.is_empty() {
             let (line, col) = self.search_results[0];
             let tab = &mut self.tabs[self.active_tab];
             tab.cursor_position = (col, line);
+            self.ensure_cursor_visible();
+            
+            self.debug_messages.push(format!("Found {} matches", self.search_results.len()));
+        } else {
+            self.debug_messages.push("No matches found".to_string());
         }
     }
 
@@ -2212,7 +2368,30 @@ impl Editor {
         } else {
             match key.code {
                 KeyCode::Char(c) => {
-                    self.search_query.push(c);
+                    match c {
+                        'i' if key.modifiers.contains(KeyModifiers::ALT) => {
+                            // Alt+i toggles case sensitivity
+                            self.search_case_sensitive = !self.search_case_sensitive;
+                            self.debug_messages.push(format!(
+                                "Case sensitive: {}", 
+                                if self.search_case_sensitive { "ON" } else { "OFF" }
+                            ));
+                            self.perform_search(); // Re-search with new settings
+                        }
+                        'r' if key.modifiers.contains(KeyModifiers::ALT) => {
+                            // Alt+r toggles regex mode
+                            self.search_regex_mode = !self.search_regex_mode;
+                            self.debug_messages.push(format!(
+                                "Regex mode: {}", 
+                                if self.search_regex_mode { "ON" } else { "OFF" }
+                            ));
+                            self.perform_search(); // Re-search with new settings
+                        }
+                        _ => {
+                            self.search_query.push(c);
+                            self.perform_search(); // Live search as you type
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -2327,6 +2506,37 @@ impl Editor {
         // Move cursor down if it goes off screen
         if tab.cursor_position.1 < tab.scroll_offset {
             tab.cursor_position.1 = tab.scroll_offset;
+        }
+        
+        self.ensure_cursor_in_bounds();
+    }
+    
+    fn scroll_left(&mut self, columns: usize) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
+        let tab = &mut self.tabs[self.active_tab];
+        tab.horizontal_scroll = tab.horizontal_scroll.saturating_sub(columns);
+        
+        // Move cursor right if it goes off screen
+        let editor_width = self.current_editor_width.max(1);
+        if tab.cursor_position.0 >= tab.horizontal_scroll + editor_width {
+            tab.cursor_position.0 = (tab.horizontal_scroll + editor_width).saturating_sub(1);
+        }
+        
+        self.ensure_cursor_in_bounds();
+    }
+    
+    fn scroll_right(&mut self, columns: usize) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
+        let tab = &mut self.tabs[self.active_tab];
+        tab.horizontal_scroll += columns;
+        
+        // Move cursor left if it goes off screen
+        if tab.cursor_position.0 < tab.horizontal_scroll {
+            tab.cursor_position.0 = tab.horizontal_scroll;
         }
         
         self.ensure_cursor_in_bounds();

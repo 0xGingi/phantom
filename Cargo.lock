@@ -896,6 +896,7 @@ dependencies = [
  "crossterm 0.29.0",
  "dirs",
  "git2",
+ "regex",
  "ropey",
  "serde",
  "serde_json",
