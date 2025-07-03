@@ -82,43 +82,38 @@ impl Tab {
     }
 
     pub fn get_git_info(path: &Path) -> (Option<Status>, Option<String>) {
-        let repo_result = Repository::discover(path);
-        if repo_result.is_err() {
-            return (None, None);
-        }
-        let repo = repo_result.unwrap();
+        let repo = match Repository::discover(path) {
+            Ok(repo) => repo,
+            Err(_) => return (None, None),
+        };
 
         let status = if !path.exists() {
             Some(Status::WT_NEW)
         } else {
-             match repo.workdir() {
+            match repo.workdir() {
                 Some(workdir) => {
-                    let relative_path = path.strip_prefix(workdir).ok();
-                    relative_path.and_then(|p| repo.status_file(p).ok())
+                    path.strip_prefix(workdir)
+                        .ok()
+                        .and_then(|relative_path| repo.status_file(relative_path).ok())
                 },
                 None => None,
             }
         };
 
-        let branch = match repo.head() {
-            Ok(head) => {
-                if head.is_branch() {
-                    head.shorthand().map(String::from)
-                } else {
-                    None
-                }
-            },
-            Err(_) => None,
-        };
+        let branch = repo.head()
+            .ok()
+            .filter(|head| head.is_branch())
+            .and_then(|head| head.shorthand().map(String::from));
 
         (status, branch)
     }
 
     pub fn adjust_horizontal_scroll(&mut self, editor_width: usize) {
+        let editor_width = editor_width.max(1);
         if self.cursor_position.0 < self.horizontal_scroll {
             self.horizontal_scroll = self.cursor_position.0;
         } else if self.cursor_position.0 >= self.horizontal_scroll + editor_width {
-            self.horizontal_scroll = self.cursor_position.0 - editor_width + 1;
+            self.horizontal_scroll = self.cursor_position.0.saturating_sub(editor_width.saturating_sub(1));
         }
     }
 } 

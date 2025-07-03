@@ -121,7 +121,14 @@ impl Editor {
     }
 
     fn handle_minimap_click(&mut self, _x: u16, y: u16) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
+        
         let total_lines = self.tabs[self.active_tab].content.len();
+        if total_lines == 0 {
+            return;
+        }
     
         let adjusted_y = y.saturating_sub(1) as usize;
     
@@ -144,13 +151,17 @@ impl Editor {
     }
 
     fn ensure_cursor_visible(&mut self) {
-        let editor_height = self.current_editor_height;
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
+        
+        let editor_height = self.current_editor_height.max(1);
         let tab = &mut self.tabs[self.active_tab];
 
         if tab.cursor_position.1 < tab.scroll_offset {
             tab.scroll_offset = tab.cursor_position.1;
         } else if tab.cursor_position.1 >= tab.scroll_offset + editor_height {
-            tab.scroll_offset = tab.cursor_position.1 - editor_height + 1;
+            tab.scroll_offset = tab.cursor_position.1.saturating_sub(editor_height.saturating_sub(1));
         }
     }
 
@@ -181,10 +192,13 @@ impl Editor {
     }
 
     fn render_minimap<B: tui::backend::Backend>(&mut self, f: &mut Frame<B>, area: Rect) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
         let tab = &self.tabs[self.active_tab];
         let content = &tab.content;
     
-        if content.is_empty() {
+        if content.is_empty() || area.width < 3 || area.height < 3 {
             let empty_minimap = Paragraph::new("No content")
                 .block(Block::default().borders(Borders::ALL).title("Minimap"))
                 .style(Style::default()
@@ -195,8 +209,12 @@ impl Editor {
         }
     
         let total_lines = content.len();
-        let minimap_height = area.height as usize - 2;
-        let minimap_width = (area.width as usize - 2) * 2;
+        let minimap_height = (area.height as usize).saturating_sub(2);
+        let minimap_width = (area.width as usize).saturating_sub(2).saturating_mul(2);
+        
+        if minimap_height == 0 || minimap_width == 0 {
+            return;
+        }
     
         let scale_y = (total_lines as f32 / minimap_height as f32).max(1.0);
         let scale_x = 4;
@@ -227,7 +245,7 @@ impl Editor {
                         let content_y = (min_line + dy).min(total_lines - 1);
                         let content_x = x / 2 * scale_x + dx;
     
-                        if content_x < content[content_y].len() {
+                        if content_y < content.len() && content_x < content[content_y].len() {
                             braille_char |= 1 << (dy + 4 * dx);
                             dot_count += 1;
                         }
@@ -250,7 +268,7 @@ impl Editor {
                 };
     
                 line_spans.push(Span::styled(
-                    char::from_u32(braille_char).unwrap().to_string(),
+                    char::from_u32(braille_char).unwrap_or('?').to_string(),
                     style
                 ));
             }
@@ -275,6 +293,7 @@ impl Editor {
             self.active_tab = tab_index;
             self.debug_messages.push(format!("Switched to tab {}", tab_index + 1));
             self.update_current_tab_info();
+            self.ensure_cursor_in_bounds();
         } else {
             self.debug_messages.push(format!("Tab {} does not exist", tab_index + 1));
         }
@@ -298,20 +317,34 @@ impl Editor {
     }
 
     fn update_tab_name(&mut self) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
         let tab = &mut self.tabs[self.active_tab];
         if let Some(path) = &tab.current_file {
-            let _file_name = Path::new(path).file_name().unwrap().to_str().unwrap().to_string();
+            let _file_name = Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "Untitled".to_string());
         }
     }
 
     fn ensure_cursor_in_bounds(&mut self) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
         let tab = &mut self.tabs[self.active_tab];
         if tab.content.is_empty() {
             tab.content.push(String::new());
         }
-        tab.cursor_position.1 = tab.cursor_position.1.min(tab.content.len() - 1);
-        let line_length = tab.content[tab.cursor_position.1].len();
-        tab.cursor_position.0 = tab.cursor_position.0.min(line_length);
+        tab.cursor_position.1 = tab.cursor_position.1.min(tab.content.len().saturating_sub(1));
+        if tab.cursor_position.1 < tab.content.len() {
+            let line_length = tab.content[tab.cursor_position.1].len();
+            tab.cursor_position.0 = tab.cursor_position.0.min(line_length);
+        } else {
+            tab.cursor_position = (0, 0);
+        }
     }
 
     fn next_tab(&mut self) {
@@ -339,6 +372,9 @@ impl Editor {
     }
 
     fn update_current_tab_info(&mut self) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
         let tab = &self.tabs[self.active_tab];
         self.content = tab.content.clone();
         self.cursor_position = tab.cursor_position;
@@ -378,6 +414,9 @@ impl Editor {
     }
     
     fn save_state(&mut self) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
         let tab_index = self.active_tab;
         let tab = &mut self.tabs[tab_index];
         let operation = EditOperation {
@@ -395,6 +434,9 @@ impl Editor {
     }
 
     fn undo(&mut self) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
         let tab = &mut self.tabs[self.active_tab];
         if let Some(operation) = tab.undo_stack.pop_front() {
             let current_state = EditOperation {
@@ -409,10 +451,15 @@ impl Editor {
             tab.cursor_position = operation.cursor_position;
             tab.scroll_offset = operation.scroll_offset;
             tab.horizontal_scroll = operation.horizontal_scroll;
+            
+            self.ensure_cursor_in_bounds();
         }
     }
 
     fn redo(&mut self) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
         let tab = &mut self.tabs[self.active_tab];
         if let Some(operation) = tab.redo_stack.pop_front() {
             let current_state = EditOperation {
@@ -427,6 +474,8 @@ impl Editor {
             tab.cursor_position = operation.cursor_position;
             tab.scroll_offset = operation.scroll_offset;
             tab.horizontal_scroll = operation.horizontal_scroll;
+            
+            self.ensure_cursor_in_bounds();
         }
     }
 
@@ -531,7 +580,7 @@ impl Editor {
                                     self.handle_minimap_click(x, y);
                                 } else {
                                     let (x, y) = (mouse_event.column as usize, mouse_event.row as usize);
-                                    self.start_mouse_selection(x, y);
+                                    self.handle_editor_click(x, y);
                                 }
                             }
                             MouseEventKind::Drag(MouseButton::Left) => {
@@ -541,7 +590,13 @@ impl Editor {
                             MouseEventKind::Up(MouseButton::Right) => {
                                 self.copy_selection_to_clipboard();
                                 self.end_mouse_selection();
-                            }          
+                            }
+                            MouseEventKind::ScrollUp => {
+                                self.scroll_up(3); // Scroll up 3 lines
+                            }
+                            MouseEventKind::ScrollDown => {
+                                self.scroll_down(3); // Scroll down 3 lines
+                            }
                             _ => {}
                         }
                     }
@@ -568,6 +623,9 @@ impl Editor {
     }
 
     fn copy_selection_to_clipboard(&mut self) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
         if let (Some(start), Some(end)) = (self.mouse_selection_start, self.mouse_selection_end) {
             let (start, end) = if start <= end { (start, end) } else { (end, start) };
             let tab = &self.tabs[self.active_tab];
@@ -579,11 +637,17 @@ impl Editor {
                 }
                 let line = &tab.content[i];
                 if i == start.1 && i == end.1 {
-                    selected_text.push_str(&line[start.0.min(line.len())..end.0.min(line.len())]);
+                    let start_pos = start.0.min(line.len());
+                    let end_pos = end.0.min(line.len());
+                    if start_pos <= end_pos {
+                        selected_text.push_str(&line[start_pos..end_pos]);
+                    }
                 } else if i == start.1 {
-                    selected_text.push_str(&line[start.0.min(line.len())..]);
+                    let start_pos = start.0.min(line.len());
+                    selected_text.push_str(&line[start_pos..]);
                 } else if i == end.1 {
-                    selected_text.push_str(&line[..end.0.min(line.len())]);
+                    let end_pos = end.0.min(line.len());
+                    selected_text.push_str(&line[..end_pos]);
                 } else {
                     selected_text.push_str(line);
                 }
@@ -617,10 +681,54 @@ impl Editor {
     }
 
     fn screen_to_content_position(&self, x: usize, y: usize) -> (usize, usize) {
+        if self.active_tab >= self.tabs.len() {
+            return (0, 0);
+        }
         let tab = &self.tabs[self.active_tab];
         let line = y.saturating_sub(4) + tab.scroll_offset;
         let column = x.saturating_sub(1) + tab.horizontal_scroll;
-        (column, line)
+        let max_line = tab.content.len().saturating_sub(1);
+        let clamped_line = line.min(max_line);
+        let max_column = if clamped_line < tab.content.len() {
+            tab.content[clamped_line].len()
+        } else {
+            0
+        };
+        (column.min(max_column), clamped_line)
+    }
+
+    fn handle_editor_click(&mut self, x: usize, y: usize) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
+        
+        // Calculate the editor area bounds
+        let tab_bar_height = 3;
+        let debug_height = if self.show_debug { 6 } else { 0 };
+        let _status_bar_height = 1;
+        let editor_start_y = tab_bar_height + debug_height + 1; // +1 for border
+        
+        // Check if click is within editor area
+        if y < editor_start_y {
+            return;
+        }
+        
+        let relative_y = y.saturating_sub(editor_start_y);
+        let relative_x = x.saturating_sub(self.line_number_width as usize + 1); // Account for line numbers and border
+        
+        let tab = &mut self.tabs[self.active_tab];
+        let new_line = (relative_y + tab.scroll_offset).min(tab.content.len().saturating_sub(1));
+        let new_column = if new_line < tab.content.len() {
+            (relative_x + tab.horizontal_scroll).min(tab.content[new_line].len())
+        } else {
+            0
+        };
+        
+        tab.cursor_position = (new_column, new_line);
+        self.ensure_cursor_visible();
+        
+        // Start mouse selection
+        self.start_mouse_selection(x, y);
     }
 
     fn handle_key_event(&mut self, key: KeyEvent) -> io::Result<bool> {
@@ -1051,8 +1159,11 @@ impl Editor {
                 Ok(false)
             }
             cmd if cmd.starts_with("w ") => {
-                let filename = cmd.split_whitespace().nth(1).unwrap();
-                self.save_file(Some(Path::new(filename)))?;
+                if let Some(filename) = cmd.split_whitespace().nth(1) {
+                    self.save_file(Some(Path::new(filename)))?;
+                } else {
+                    self.debug_messages.push("No filename specified".to_string());
+                }
                 Ok(false)
             }
             "wq" => {
@@ -1066,8 +1177,14 @@ impl Editor {
             }
 
             cmd if cmd.starts_with("e ") => {
-                let filename = cmd.split_whitespace().nth(1).unwrap();
-                self.open_file(Path::new(filename))?;
+                if let Some(filename) = cmd.split_whitespace().nth(1) {
+                    match self.open_file(Path::new(filename)) {
+                        Ok(_) => {},
+                        Err(e) => self.debug_messages.push(format!("Failed to open {}: {}", filename, e)),
+                    }
+                } else {
+                    self.debug_messages.push("No filename specified".to_string());
+                }
                 Ok(false)
             }
             _ => {
@@ -1078,28 +1195,45 @@ impl Editor {
     }
 
     fn move_cursor_up(&mut self) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
         let tab = &mut self.tabs[self.active_tab];
         if tab.cursor_position.1 > 0 {
             tab.cursor_position.1 -= 1;
             if tab.cursor_position.1 < tab.scroll_offset {
                 tab.scroll_offset = tab.cursor_position.1;
             }
+            self.ensure_cursor_in_bounds();
         }
     }
     
     fn move_cursor_down(&mut self) {
-        let editor_height = self.current_editor_height;
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
+        let editor_height = self.current_editor_height.max(1);
         let tab = &mut self.tabs[self.active_tab];
-        if tab.cursor_position.1 < tab.content.len() - 1 {
+        if tab.content.is_empty() {
+            return;
+        }
+        if tab.cursor_position.1 < tab.content.len().saturating_sub(1) {
             tab.cursor_position.1 += 1;
             if tab.cursor_position.1 >= tab.scroll_offset + editor_height {
-                tab.scroll_offset = tab.cursor_position.1 - editor_height + 1;
+                tab.scroll_offset = tab.cursor_position.1.saturating_sub(editor_height.saturating_sub(1));
             }
+            self.ensure_cursor_in_bounds();
         }
     }
 
     fn move_cursor_left(&mut self) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
         let tab = &mut self.tabs[self.active_tab];
+        if tab.content.is_empty() {
+            return;
+        }
         if tab.cursor_position.0 > 0 {
             tab.cursor_position.0 -= 1;
             if tab.cursor_position.0 < tab.horizontal_scroll {
@@ -1107,42 +1241,73 @@ impl Editor {
             }
         } else if tab.cursor_position.1 > 0 {
             tab.cursor_position.1 -= 1;
-            tab.cursor_position.0 = tab.content[tab.cursor_position.1].len();
-            tab.adjust_horizontal_scroll(self.current_editor_width);
+            if tab.cursor_position.1 < tab.content.len() {
+                tab.cursor_position.0 = tab.content[tab.cursor_position.1].len();
+                tab.adjust_horizontal_scroll(self.current_editor_width);
+            }
         }
+        self.ensure_cursor_in_bounds();
     }
 
     fn move_cursor_right(&mut self) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
         let tab = &mut self.tabs[self.active_tab];
-        if tab.cursor_position.0 < tab.content[tab.cursor_position.1].len() {
+        if tab.content.is_empty() {
+            return;
+        }
+        if tab.cursor_position.1 < tab.content.len() && tab.cursor_position.0 < tab.content[tab.cursor_position.1].len() {
             tab.cursor_position.0 += 1;
             tab.adjust_horizontal_scroll(self.current_editor_width);
-        } else if tab.cursor_position.1 < tab.content.len() - 1 {
+        } else if tab.cursor_position.1 < tab.content.len().saturating_sub(1) {
             tab.cursor_position.1 += 1;
             tab.cursor_position.0 = 0;
             tab.horizontal_scroll = 0;
         }
+        self.ensure_cursor_in_bounds();
     }
     
     fn move_cursor_start_of_line(&mut self) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
         let tab = &mut self.tabs[self.active_tab];
         tab.cursor_position.0 = 0;
         tab.adjust_horizontal_scroll(self.current_editor_width);
     }
 
     fn move_cursor_end_of_line(&mut self) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
         let tab = &mut self.tabs[self.active_tab];
+        if tab.content.is_empty() || tab.cursor_position.1 >= tab.content.len() {
+            return;
+        }
         tab.cursor_position.0 = tab.content[tab.cursor_position.1].len();
         tab.adjust_horizontal_scroll(self.current_editor_width);
     }
 
     fn insert_char(&mut self, c: char) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
         self.save_state();
         let tab = &mut self.tabs[self.active_tab];
+        if tab.content.is_empty() {
+            tab.content.push(String::new());
+        }
+        if tab.cursor_position.1 >= tab.content.len() {
+            self.ensure_cursor_in_bounds();
+            return;
+        }
         let line = &mut tab.content[tab.cursor_position.1];
-        line.insert(tab.cursor_position.0, c);
-        tab.cursor_position.0 += 1;
-        tab.adjust_horizontal_scroll(self.current_editor_width);
+        if tab.cursor_position.0 <= line.len() {
+            line.insert(tab.cursor_position.0, c);
+            tab.cursor_position.0 += 1;
+            tab.adjust_horizontal_scroll(self.current_editor_width);
+        }
     }
 
     fn insert_newline(&mut self) {
@@ -1169,7 +1334,10 @@ impl Editor {
     }
 
     fn page_up(&mut self) {
-        let visible_lines = self.current_editor_height;
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
+        let visible_lines = self.current_editor_height.max(1);
         let tab = &mut self.tabs[self.active_tab];
         if tab.scroll_offset > visible_lines {
             tab.scroll_offset -= visible_lines;
@@ -1177,51 +1345,79 @@ impl Editor {
             tab.scroll_offset = 0;
         }
         tab.cursor_position.1 = tab.scroll_offset;
+        self.ensure_cursor_in_bounds();
     }
     
     fn page_down(&mut self) {
-        let visible_lines = self.current_editor_height;
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
+        let visible_lines = self.current_editor_height.max(1);
         let tab = &mut self.tabs[self.active_tab];
+        if tab.content.is_empty() {
+            return;
+        }
         let max_scroll = tab.content.len().saturating_sub(visible_lines);
         if tab.scroll_offset + visible_lines < max_scroll {
             tab.scroll_offset += visible_lines;
         } else {
             tab.scroll_offset = max_scroll;
         }
-        tab.cursor_position.1 = tab.scroll_offset + visible_lines - 1;
-        if tab.cursor_position.1 >= tab.content.len() {
-            tab.cursor_position.1 = tab.content.len() - 1;
-        }
+        tab.cursor_position.1 = (tab.scroll_offset + visible_lines.saturating_sub(1)).min(tab.content.len().saturating_sub(1));
+        self.ensure_cursor_in_bounds();
     }
 
     fn backspace(&mut self) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
         self.save_state();
         let tab = &mut self.tabs[self.active_tab];
+        if tab.content.is_empty() {
+            return;
+        }
+        if tab.cursor_position.1 >= tab.content.len() {
+            self.ensure_cursor_in_bounds();
+            return;
+        }
         if tab.cursor_position.0 > 0 {
             let line = &mut tab.content[tab.cursor_position.1];
-            line.remove(tab.cursor_position.0 - 1);
-            tab.cursor_position.0 -= 1;
+            if tab.cursor_position.0 <= line.len() {
+                line.remove(tab.cursor_position.0 - 1);
+                tab.cursor_position.0 -= 1;
+            }
         } else if tab.cursor_position.1 > 0 {
             let current_line = tab.content.remove(tab.cursor_position.1);
             tab.cursor_position.1 -= 1;
-            tab.cursor_position.0 = tab.content[tab.cursor_position.1].len();
-            tab.content[tab.cursor_position.1].push_str(&current_line);
+            if tab.cursor_position.1 < tab.content.len() {
+                tab.cursor_position.0 = tab.content[tab.cursor_position.1].len();
+                tab.content[tab.cursor_position.1].push_str(&current_line);
+            }
         }
     }
 
     fn delete_char(&mut self) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
         self.save_state();
         let tab = &mut self.tabs[self.active_tab];
+        if tab.content.is_empty() || tab.cursor_position.1 >= tab.content.len() {
+            return;
+        }
         let line = &mut tab.content[tab.cursor_position.1];
         if tab.cursor_position.0 < line.len() {
             line.remove(tab.cursor_position.0);
-        } else if tab.cursor_position.1 < tab.content.len() - 1 {
+        } else if tab.cursor_position.1 < tab.content.len().saturating_sub(1) {
             let next_line = tab.content.remove(tab.cursor_position.1 + 1);
             tab.content[tab.cursor_position.1].push_str(&next_line);
         }
     }
 
     fn delete_line(&mut self) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
         let tab_index = self.active_tab;
         
         if self.tabs[tab_index].cursor_position.1 < self.tabs[tab_index].content.len() {
@@ -1230,18 +1426,21 @@ impl Editor {
             let tab = &mut self.tabs[tab_index];
             let cursor_y = tab.cursor_position.1;
             
-            let line = tab.content.remove(cursor_y);
-            self.clipboard_context.set_contents(line).unwrap();
-            
-            if tab.content.is_empty() {
-                tab.content.push(String::new());
+            if cursor_y < tab.content.len() {
+                let line = tab.content.remove(cursor_y);
+                let _ = self.clipboard_context.set_contents(line);
+                
+                if tab.content.is_empty() {
+                    tab.content.push(String::new());
+                }
+                
+                if cursor_y == tab.content.len() && cursor_y > 0 {
+                    tab.cursor_position.1 -= 1;
+                }
+                
+                tab.cursor_position.0 = 0;
+                self.ensure_cursor_in_bounds();
             }
-            
-            if cursor_y == tab.content.len() && cursor_y > 0 {
-                tab.cursor_position.1 -= 1;
-            }
-            
-            tab.cursor_position.0 = 0;
         }
     }
 
@@ -1260,11 +1459,14 @@ impl Editor {
     }
 
     fn yank_line(&mut self) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
         self.save_state();
         let tab = &mut self.tabs[self.active_tab];
         if tab.cursor_position.1 < tab.content.len() {
             let line = tab.content[tab.cursor_position.1].clone();
-            self.clipboard_context.set_contents(line).unwrap();
+            let _ = self.clipboard_context.set_contents(line);
         }
     }
 
@@ -1416,13 +1618,21 @@ impl Editor {
     fn open_file(&mut self, path: &Path) -> io::Result<()> {
         let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
-        let new_tab = Tab::from_file(&canonical_path, &self.ps)?;
+        let new_tab = match Tab::from_file(&canonical_path, &self.ps) {
+            Ok(tab) => tab,
+            Err(e) => {
+                self.debug_messages.push(format!("Failed to open file {}: {}", canonical_path.display(), e));
+                return Err(e);
+            }
+        };
 
         if self.tabs.len() == 1 && self.tabs[0].content == vec![String::new()] && self.tabs[0].current_file.is_none() {
             self.tabs[0] = new_tab;
             self.active_tab = 0;
         } else {
-            if let Some(existing_index) = self.tabs.iter().position(|t| t.current_file.as_deref() == Some(canonical_path.to_string_lossy().as_ref())) {
+            if let Some(existing_index) = self.tabs.iter().position(|t| {
+                t.current_file.as_deref() == Some(canonical_path.to_string_lossy().as_ref())
+            }) {
                 self.active_tab = existing_index;
             } else {
                 self.tabs.push(new_tab);
@@ -1432,6 +1642,7 @@ impl Editor {
 
         self.update_current_tab_info();
         self.update_tab_name();
+        self.ensure_cursor_in_bounds();
 
         if canonical_path.exists() {
             self.debug_messages.push(format!("File opened: {}", canonical_path.display()));
@@ -1651,25 +1862,27 @@ impl Editor {
 
             let line_numbers: Vec<Spans> = (0..editor_height)
                 .map(|i| {
-                    let current_absolute_line = scroll_offset + i + 1;
-                    if current_absolute_line <= total_lines {
+                    let current_absolute_line = scroll_offset + i;
+                    if current_absolute_line < total_lines {
+                        let line_number = current_absolute_line + 1; // Display as 1-based
                         let (display_num, style) = match self.line_number_mode {
                             LineNumberMode::Absolute => {
-                                (current_absolute_line.to_string(), line_number_style)
+                                (line_number.to_string(), 
+                                 if current_absolute_line == cursor_position.1 { current_line_style } else { line_number_style })
                             }
                             LineNumberMode::Relative => {
-                                if current_absolute_line == cursor_position.1 + 1 {
-                                    (current_absolute_line.to_string(), current_line_style)
+                                if current_absolute_line == cursor_position.1 {
+                                    (line_number.to_string(), current_line_style)
                                 } else {
-                                    let diff = ((cursor_position.1 + 1) as isize - current_absolute_line as isize).abs();
+                                    let diff = (cursor_position.1 as isize - current_absolute_line as isize).abs();
                                     (diff.to_string(), line_number_style)
                                 }
                             }
                             LineNumberMode::Hybrid => {
-                                if current_absolute_line == cursor_position.1 + 1 {
-                                    (current_absolute_line.to_string(), current_line_style)
+                                if current_absolute_line == cursor_position.1 {
+                                    (line_number.to_string(), current_line_style)
                                 } else {
-                                    let diff = ((cursor_position.1 + 1) as isize - current_absolute_line as isize).abs();
+                                    let diff = (cursor_position.1 as isize - current_absolute_line as isize).abs();
                                     (diff.to_string(), line_number_style)
                                 }
                             }
@@ -1695,9 +1908,19 @@ impl Editor {
             f.render_widget(line_number_paragraph, line_number_area);
         }
 
-        let syntax = self.ps.find_syntax_by_extension("rs")
-            .or_else(|| self.ps.find_syntax_by_name(&self.syntax))
-            .unwrap_or_else(|| self.ps.find_syntax_plain_text());
+        let syntax = if let Some(ref current_file) = active_tab.current_file {
+            let path = std::path::Path::new(current_file);
+            if let Some(extension) = path.extension().and_then(|ext| ext.to_str()) {
+                self.ps.find_syntax_by_extension(extension)
+                    .or_else(|| self.ps.find_syntax_by_name(&self.syntax))
+                    .unwrap_or_else(|| self.ps.find_syntax_plain_text())
+            } else {
+                self.ps.find_syntax_by_name(&self.syntax)
+                    .unwrap_or_else(|| self.ps.find_syntax_plain_text())
+            }
+        } else {
+            self.ps.find_syntax_plain_text()
+        };
         let theme = &self.ts.themes["base16-ocean.dark"];
         let mut h = HighlightLines::new(syntax, theme);
 
@@ -1709,7 +1932,7 @@ impl Editor {
         let mut text_spans = Vec::new();
         for (index, line) in visible_content {
             let absolute_line_index = scroll_offset + index;
-            let ranges: Vec<(SyntectStyle, &str)> = h.highlight_line(line, &self.ps).unwrap();
+            let ranges: Vec<(SyntectStyle, &str)> = h.highlight_line(line, &self.ps).unwrap_or_default();
             let mut current_line_styled_spans = Vec::new();
             let mut current_char_pos = 0;
 
@@ -2069,6 +2292,44 @@ impl Editor {
         }
     
         None
+    }
+
+    fn scroll_up(&mut self, lines: usize) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
+        let tab = &mut self.tabs[self.active_tab];
+        let _old_scroll = tab.scroll_offset;
+        tab.scroll_offset = tab.scroll_offset.saturating_sub(lines);
+        
+        // Move cursor up if it goes off screen
+        let editor_height = self.current_editor_height.max(1);
+        if tab.cursor_position.1 >= tab.scroll_offset + editor_height {
+            tab.cursor_position.1 = (tab.scroll_offset + editor_height).saturating_sub(1);
+        }
+        
+        self.ensure_cursor_in_bounds();
+    }
+    
+    fn scroll_down(&mut self, lines: usize) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
+        let tab = &mut self.tabs[self.active_tab];
+        if tab.content.is_empty() {
+            return;
+        }
+        
+        let editor_height = self.current_editor_height.max(1);
+        let max_scroll = tab.content.len().saturating_sub(editor_height);
+        tab.scroll_offset = (tab.scroll_offset + lines).min(max_scroll);
+        
+        // Move cursor down if it goes off screen
+        if tab.cursor_position.1 < tab.scroll_offset {
+            tab.cursor_position.1 = tab.scroll_offset;
+        }
+        
+        self.ensure_cursor_in_bounds();
     }
 
     fn safe_slice(s: &str, start_byte: usize, end_byte: Option<usize>) -> String {
