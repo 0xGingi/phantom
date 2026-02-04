@@ -7,6 +7,7 @@ mod config;
 
 mod tab;
 mod ui;
+mod agent;
 
 mod file_selector;
 use file_selector::FileSelector;

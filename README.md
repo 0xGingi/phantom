@@ -13,6 +13,7 @@ phantom is a lightweight, terminal-based linux text editor written in Rust. It c
 - System clipboard integration
 - Customizable (Currently Keybindings and Colors)
 - Directory Navigation (Sidebar)
+- CLI Coding Agents (Sidebar)
 - Debug Output Menu
 - Search in file
 - Undo and Redo
@@ -111,6 +112,7 @@ If a directory is provided, phantom will enter directory navigation mode
 - `:`: Enter Command mode
 - `Ctrl+B`: Toggle debug menu visibility
 - `Ctrl+E`: Enter directory navigation mode
+- `Ctrl+G`: Open agents sidebar
 - `/`: Enter Search mode
 - `n`: Go to next search result
 - `N`: Go to previous search result
@@ -152,6 +154,8 @@ If a directory is provided, phantom will enter directory navigation mode
 - `:q`: Quit the editor
 - `:wq`: Save and quit
 - `:e filename`: Open 'filename' for editing
+- `:agents`: Toggle agents sidebar
+- `:agent <command>`: Launch a custom agent command in the sidebar
 
 ### Search Mode
 

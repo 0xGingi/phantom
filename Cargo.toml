@@ -1,6 +1,6 @@
 [package]
 name = "phantom"
-version = "2.0.0"
+version = "2.0.1"
 edition = "2021"
 
 [dependencies]
@@ -16,3 +16,5 @@ dirs = "6.0"
 serde_json = "1.0"
 git2 = "0.20"
 regex = "1.10"
+portable-pty = "0.9"
+vt100 = "0.16"

@@ -1,4 +1,5 @@
 use crate::{
+    agent::AgentSidebar,
     config::{ColorConfig, Keybindings},
     file_selector::FileSelector,
     mode::{Mode, LineNumberMode},
@@ -11,6 +12,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use std::{error::Error, io};
+use std::time::Duration;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::env;
@@ -29,6 +31,13 @@ use copypasta::ClipboardProvider;
 use dirs;
 use git2::Status;
 use regex;
+
+#[derive(PartialEq, Clone, Copy)]
+enum SidebarView {
+    None,
+    FileSelector,
+    Agent,
+}
 
 pub struct Editor {
     content: Vec<String>,
@@ -59,8 +68,9 @@ pub struct Editor {
     horizontal_scroll: usize,
     keybindings: Keybindings,
     color_config: ColorConfig,
-    show_sidebar: bool,
+    sidebar_view: SidebarView,
     sidebar_width: u16,
+    agent_sidebar: AgentSidebar,
     pending_key: Option<String>,
     tabs: Vec<Tab>,
     active_tab: usize,
@@ -74,6 +84,8 @@ pub struct Editor {
     line_number_mode: LineNumberMode,
     line_number_width: u16,
     highlight_bracket_matches: bool,
+    resizing_sidebar: bool,
+    sidebar_area: Option<Rect>,
 }
 
 impl Editor {
@@ -110,8 +122,9 @@ impl Editor {
             horizontal_scroll: 0,
             keybindings,
             color_config,
-            show_sidebar: false,
+            sidebar_view: SidebarView::None,
             sidebar_width: 30,
+            agent_sidebar: AgentSidebar::new(),
             pending_key: None,
             tabs: vec![Tab::new()],
             active_tab: 0,
@@ -125,6 +138,8 @@ impl Editor {
             line_number_mode: LineNumberMode::Absolute,
             line_number_width: 0,
             highlight_bracket_matches: true,
+            resizing_sidebar: false,
+            sidebar_area: None,
         }
     }
 
@@ -135,6 +150,37 @@ impl Editor {
         let minimap_height = self.minimap_line_mapping.len() as u16 + 1;
     
         x >= minimap_x && x < minimap_x + minimap_width && y >= minimap_y && y < minimap_y + minimap_height
+    }
+
+    fn is_sidebar_resize_zone(&self, x: u16) -> bool {
+        if self.sidebar_view == SidebarView::None {
+            return false;
+        }
+        let boundary = self.sidebar_width;
+        x >= boundary.saturating_sub(1) && x <= boundary
+    }
+
+    fn resize_sidebar_to(&mut self, new_width: u16) {
+        if self.sidebar_view == SidebarView::None {
+            return;
+        }
+        let (term_width, _) = match crossterm::terminal::size() {
+            Ok(size) => size,
+            Err(_) => return,
+        };
+        let minimap_width = if self.show_minimap
+            && self.active_tab < self.tabs.len()
+            && !self.tabs[self.active_tab].content.is_empty()
+        {
+            self.minimap_width
+        } else {
+            0
+        };
+        let min_sidebar = 20u16;
+        let min_editor = 20u16;
+        let max_sidebar = term_width.saturating_sub(min_editor + minimap_width);
+        let clamped = new_width.clamp(min_sidebar, max_sidebar.max(min_sidebar));
+        self.sidebar_width = clamped;
     }
 
     fn handle_minimap_click(&mut self, _x: u16, y: u16) {
@@ -635,6 +681,41 @@ impl Editor {
         key_string
     }
 
+    fn key_event_to_agent_bytes(key: event::KeyEvent) -> Option<Vec<u8>> {
+        let mut bytes = Vec::new();
+        if key.modifiers.contains(KeyModifiers::ALT) {
+            bytes.push(0x1b);
+        }
+
+        match key.code {
+            KeyCode::Char(c) => {
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    let ctrl = (c.to_ascii_lowercase() as u8) & 0x1f;
+                    bytes.push(ctrl);
+                } else {
+                    bytes.extend_from_slice(c.to_string().as_bytes());
+                }
+            }
+            KeyCode::Enter => bytes.push(b'\r'),
+            KeyCode::Backspace => bytes.push(0x7f),
+            KeyCode::Tab => bytes.push(b'\t'),
+            KeyCode::BackTab => bytes.extend_from_slice(b"\x1b[Z"),
+            KeyCode::Esc => bytes.push(0x1b),
+            KeyCode::Up => bytes.extend_from_slice(b"\x1b[A"),
+            KeyCode::Down => bytes.extend_from_slice(b"\x1b[B"),
+            KeyCode::Right => bytes.extend_from_slice(b"\x1b[C"),
+            KeyCode::Left => bytes.extend_from_slice(b"\x1b[D"),
+            KeyCode::Home => bytes.extend_from_slice(b"\x1b[H"),
+            KeyCode::End => bytes.extend_from_slice(b"\x1b[F"),
+            KeyCode::PageUp => bytes.extend_from_slice(b"\x1b[5~"),
+            KeyCode::PageDown => bytes.extend_from_slice(b"\x1b[6~"),
+            KeyCode::Delete => bytes.extend_from_slice(b"\x1b[3~"),
+            _ => return None,
+        }
+
+        Some(bytes)
+    }
+
     fn create_default_config(config_path: &PathBuf) -> Result<(), Box<dyn Error>> {
         if let Some(parent) = config_path.parent() {
             fs::create_dir_all(parent)?;
@@ -670,15 +751,33 @@ impl Editor {
     }
 
     fn run_app<B: tui::backend::Backend>(&mut self, terminal: &mut Terminal<B>) -> io::Result<bool> {
+        let tick_rate = Duration::from_millis(50);
         loop {
+            self.agent_sidebar.drain_output();
             terminal.draw(|f| self.ui(f))?;
     
-            if let Ok(event) = event::read() {
-                match event {
+            if event::poll(tick_rate)? {
+                if let Ok(event) = event::read() {
+                    match event {
                     Event::Mouse(mouse_event) => {
                         match mouse_event.kind {
                             MouseEventKind::Down(MouseButton::Left) => {
                                 let (x, y) = (mouse_event.column, mouse_event.row);
+                                if self.is_sidebar_resize_zone(x) {
+                                    self.resizing_sidebar = true;
+                                    self.resize_sidebar_to(x);
+                                    self.mode = Mode::SidebarActive;
+                                    continue;
+                                }
+                                if let Some(area) = self.sidebar_area {
+                                    if x >= area.x && x < area.x + area.width && y >= area.y && y < area.y + area.height {
+                                        self.mode = Mode::SidebarActive;
+                                        continue;
+                                    }
+                                }
+                                if self.sidebar_view == SidebarView::Agent && self.mode == Mode::SidebarActive {
+                                    self.mode = Mode::Normal;
+                                }
                                 if self.is_minimap_area(x, y) {
                                     self.handle_minimap_click(x, y);
                                 } else {
@@ -687,14 +786,34 @@ impl Editor {
                                 }
                             }
                             MouseEventKind::Drag(MouseButton::Left) => {
+                                if self.resizing_sidebar {
+                                    self.resize_sidebar_to(mouse_event.column);
+                                    continue;
+                                }
                                 let (x, y) = (mouse_event.column as usize, mouse_event.row as usize);
                                 self.update_mouse_selection(x, y);
+                            }
+                            MouseEventKind::Up(MouseButton::Left) => {
+                                if self.resizing_sidebar {
+                                    self.resizing_sidebar = false;
+                                }
                             }
                             MouseEventKind::Up(MouseButton::Right) => {
                                 self.copy_selection_to_clipboard();
                                 self.end_mouse_selection();
                             }
                             MouseEventKind::ScrollUp => {
+                                if let Some(area) = self.sidebar_area {
+                                    if self.sidebar_view == SidebarView::Agent
+                                        && mouse_event.column >= area.x
+                                        && mouse_event.column < area.x + area.width
+                                        && mouse_event.row >= area.y
+                                        && mouse_event.row < area.y + area.height
+                                    {
+                                        self.agent_sidebar.scroll_up(3);
+                                        continue;
+                                    }
+                                }
                                 if mouse_event.modifiers.contains(KeyModifiers::SHIFT) {
                                     self.scroll_left(5); // Horizontal scroll left
                                 } else {
@@ -702,6 +821,17 @@ impl Editor {
                                 }
                             }
                             MouseEventKind::ScrollDown => {
+                                if let Some(area) = self.sidebar_area {
+                                    if self.sidebar_view == SidebarView::Agent
+                                        && mouse_event.column >= area.x
+                                        && mouse_event.column < area.x + area.width
+                                        && mouse_event.row >= area.y
+                                        && mouse_event.row < area.y + area.height
+                                    {
+                                        self.agent_sidebar.scroll_down(3);
+                                        continue;
+                                    }
+                                }
                                 if mouse_event.modifiers.contains(KeyModifiers::SHIFT) {
                                     self.scroll_right(5); // Horizontal scroll right
                                 } else {
@@ -746,6 +876,7 @@ impl Editor {
                         }
                     }
                     _ => {}
+                    }
                 }
             }
         }
@@ -898,28 +1029,70 @@ impl Editor {
     }
     
     fn toggle_sidebar(&mut self) -> io::Result<bool> {
-        self.show_sidebar = !self.show_sidebar;
-        if self.show_sidebar {
-            let current_dir = if let Some(ref file) = self.current_file {
-                let path = Path::new(file);
-                if let Some(parent) = path.parent() {
-                    if parent.exists() {
-                        parent.to_path_buf()
-                    } else {
-                        env::current_dir()?
-                    }
+        if self.sidebar_view == SidebarView::FileSelector {
+            self.sidebar_view = SidebarView::None;
+            if self.mode == Mode::SidebarActive {
+                self.mode = Mode::Normal;
+            }
+            return Ok(false);
+        }
+
+        let current_dir = if let Some(ref file) = self.current_file {
+            let path = Path::new(file);
+            if let Some(parent) = path.parent() {
+                if parent.exists() {
+                    parent.to_path_buf()
                 } else {
                     env::current_dir()?
                 }
             } else {
                 env::current_dir()?
-            };
-            self.file_selector = Some(FileSelector::new(&current_dir)?);
-            self.mode = Mode::SidebarActive;
+            }
         } else {
-            self.mode = Mode::Normal;
-        }
+            env::current_dir()?
+        };
+        self.file_selector = Some(FileSelector::new(&current_dir)?);
+        self.sidebar_view = SidebarView::FileSelector;
+        self.mode = Mode::SidebarActive;
         Ok(false)
+    }
+
+    fn toggle_agent_sidebar(&mut self) -> io::Result<bool> {
+        if self.sidebar_view == SidebarView::Agent {
+            self.sidebar_view = SidebarView::None;
+            if self.mode == Mode::SidebarActive {
+                self.mode = Mode::Normal;
+            }
+            return Ok(false);
+        }
+
+        self.sidebar_view = SidebarView::Agent;
+        self.mode = Mode::SidebarActive;
+        Ok(false)
+    }
+
+    fn start_custom_agent_command(&mut self, args: Vec<String>) -> io::Result<()> {
+        let display_name = args.join(" ");
+        self.sidebar_view = SidebarView::Agent;
+        self.mode = Mode::SidebarActive;
+        let cwd = self.current_working_dir();
+        match self.agent_sidebar.start_command(args, display_name, &cwd) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                self.agent_sidebar.set_error(format!("Failed to start agent: {}", err));
+                Err(err)
+            }
+        }
+    }
+
+    fn current_working_dir(&self) -> PathBuf {
+        if let Some(ref file) = self.current_file {
+            let path = Path::new(file);
+            if let Some(parent) = path.parent() {
+                return parent.to_path_buf();
+            }
+        }
+        env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
     }
 
     fn handle_normal_mode(&mut self, key: KeyEvent) -> io::Result<bool> {
@@ -1022,6 +1195,7 @@ impl Editor {
                 Ok(false)
             },
             "toggle_sidebar" => self.toggle_sidebar(),
+            "toggle_agent_sidebar" => self.toggle_agent_sidebar(),
             "next_tab" => {
                 self.next_tab();
                 self.update_current_tab_info();
@@ -1201,11 +1375,18 @@ impl Editor {
     }
 
     fn handle_sidebar_active_mode(&mut self, key: KeyEvent) -> io::Result<bool> {
+        if self.sidebar_view == SidebarView::Agent {
+            return self.handle_agent_sidebar_mode(key);
+        }
+
         let key_str = Self::key_event_to_string(key);
         
         if let Some(action) = self.keybindings.normal_mode.get(&key_str) {
             if action == "toggle_sidebar" {
                 return self.toggle_sidebar();
+            }
+            if action == "toggle_agent_sidebar" {
+                return self.toggle_agent_sidebar();
             }
         }
     
@@ -1225,6 +1406,67 @@ impl Editor {
                 _ => {}
             }
         }
+        Ok(false)
+    }
+
+    fn handle_agent_sidebar_mode(&mut self, key: KeyEvent) -> io::Result<bool> {
+        let key_str = Self::key_event_to_string(key);
+
+        if let Some(action) = self.keybindings.normal_mode.get(&key_str) {
+            match action.as_str() {
+                "toggle_agent_sidebar" => return self.toggle_agent_sidebar(),
+                "toggle_sidebar" => return self.toggle_sidebar(),
+                _ => {}
+            }
+        }
+
+        if self.agent_sidebar.is_running() {
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                match key.code {
+                    KeyCode::Up => {
+                        self.agent_sidebar.scroll_up(1);
+                        return Ok(false);
+                    }
+                    KeyCode::Down => {
+                        self.agent_sidebar.scroll_down(1);
+                        return Ok(false);
+                    }
+                    KeyCode::PageUp => {
+                        self.agent_sidebar.page_up();
+                        return Ok(false);
+                    }
+                    KeyCode::PageDown => {
+                        self.agent_sidebar.page_down();
+                        return Ok(false);
+                    }
+                    KeyCode::End => {
+                        self.agent_sidebar.scroll_to_bottom();
+                        return Ok(false);
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(bytes) = Self::key_event_to_agent_bytes(key) {
+                let _ = self.agent_sidebar.send_bytes(&bytes);
+            }
+            return Ok(false);
+        }
+
+        match key.code {
+            KeyCode::Up => self.agent_sidebar.select_prev(),
+            KeyCode::Down => self.agent_sidebar.select_next(),
+            KeyCode::Enter => {
+                let cwd = self.current_working_dir();
+                if let Err(err) = self.agent_sidebar.start_selected(&cwd) {
+                    self.agent_sidebar.set_error(format!("Failed to start agent: {}", err));
+                }
+            }
+            KeyCode::Esc => {
+                return self.toggle_agent_sidebar();
+            }
+            _ => {}
+        }
+
         Ok(false)
     }
 
@@ -1331,6 +1573,21 @@ impl Editor {
                     }
                 } else {
                     self.debug_messages.push("No filename specified".to_string());
+                }
+                Ok(false)
+            }
+            "agents" => {
+                self.toggle_agent_sidebar()?;
+                Ok(false)
+            }
+            cmd if cmd.starts_with("agent ") => {
+                let args: Vec<String> = cmd.split_whitespace().skip(1).map(|s| s.to_string()).collect();
+                if args.is_empty() {
+                    self.debug_messages.push("No agent command specified".to_string());
+                    return Ok(false);
+                }
+                if let Err(err) = self.start_custom_agent_command(args) {
+                    self.debug_messages.push(format!("Failed to start agent: {}", err));
                 }
                 Ok(false)
             }
@@ -1909,7 +2166,7 @@ impl Editor {
         self.line_number_width = calculated_line_number_width;
 
         let total_width = f.size().width;
-        let sidebar_width = if self.show_sidebar { self.sidebar_width } else { 0 };
+        let sidebar_width = if self.sidebar_view != SidebarView::None { self.sidebar_width } else { 0 };
         let minimap_width = if self.show_minimap && !active_tab.content.is_empty() { self.minimap_width } else { 0 };
         let editor_column_width = total_width.saturating_sub(sidebar_width + minimap_width);
 
@@ -1929,9 +2186,22 @@ impl Editor {
 
         let mut current_layout_index = 0;
 
-        if self.show_sidebar {
-            if let Some(file_selector) = &self.file_selector {
-                file_selector.render(f, main_layout[current_layout_index], &self.color_config);
+        self.sidebar_area = None;
+        if self.sidebar_view != SidebarView::None {
+            match self.sidebar_view {
+                SidebarView::FileSelector => {
+                    if let Some(file_selector) = &self.file_selector {
+                        self.sidebar_area = Some(main_layout[current_layout_index]);
+                        file_selector.render(f, main_layout[current_layout_index], &self.color_config);
+                    }
+                }
+                SidebarView::Agent => {
+                    let area = main_layout[current_layout_index];
+                    self.sidebar_area = Some(area);
+                    self.agent_sidebar.resize(area.width, area.height);
+                    self.agent_sidebar.render(f, area, &self.color_config);
+                }
+                SidebarView::None => {}
             }
             current_layout_index += 1;
         }
@@ -2033,7 +2303,13 @@ impl Editor {
             Mode::FileSelect => "FILE SELECT",
             Mode::DirectoryNav => "DIRECTORY NAV",
             Mode::Search => "SEARCH",
-            Mode::SidebarActive => "SIDEBAR",
+            Mode::SidebarActive => {
+                if self.sidebar_view == SidebarView::Agent {
+                    "AGENTS"
+                } else {
+                    "SIDEBAR"
+                }
+            },
         };
         let block = Block::default()
             .borders(Borders::ALL)
@@ -2294,6 +2570,11 @@ impl Editor {
                 Mode::Normal => "NORMAL",
                 Mode::Insert => "INSERT",
                 Mode::Visual => "VISUAL",
+                Mode::SidebarActive => {
+                    if self.sidebar_view == SidebarView::Agent { "AGENTS" } else { "SIDEBAR" }
+                }
+                Mode::DirectoryNav => "DIRECTORY NAV",
+                Mode::FileSelect => "FILE SELECT",
                 _ => "",
             };
 
@@ -2677,7 +2958,7 @@ impl Editor {
             Spans::from(Span::styled("📂 File & Tabs", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
             Spans::from("  Ctrl+T       New tab              Ctrl+W       Close tab"),
             Spans::from("  F1-F9        Switch to tab 1-9    Tab          Next tab"),
-            Spans::from("  Ctrl+E       Directory navigation"),
+            Spans::from("  Ctrl+E       Directory navigation Ctrl+G       Agents sidebar"),
             Spans::from(""),
             Spans::from(Span::styled("🎛️  View & Display", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
             Spans::from("  Ctrl+M       Toggle minimap       Ctrl+B       Toggle debug"),
@@ -2691,11 +2972,13 @@ impl Editor {
             Spans::from(Span::styled("🖱️  Mouse Support", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
             Spans::from("  Click        Move cursor          Wheel        Scroll up/down"),
             Spans::from("  Shift+Wheel  Scroll left/right    Drag         Select text"),
+            Spans::from("  Drag border  Resize sidebar"),
             Spans::from(""),
             Spans::from(Span::styled("📋 Commands (:)", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
             Spans::from("  :w           Save file            :w filename  Save as"),
             Spans::from("  :q           Quit                 :wq          Save & quit"),
-            Spans::from("  :e filename  Open file"),
+            Spans::from("  :e filename  Open file            :agents      Toggle agents"),
+            Spans::from("  :agent cmd   Launch agent cmd"),
             Spans::from(""),
             Spans::from(Span::styled("Press ? or Esc to close this help", Style::default().add_modifier(Modifier::ITALIC).fg(Color::Gray))),
         ];

@@ -261,6 +261,7 @@ impl Keybindings {
                 (":".to_string(), "enter_command_mode".to_string()),
                 ("Ctrl+b".to_string(), "toggle_debug_menu".to_string()),
                 ("Ctrl+e".to_string(), "toggle_sidebar".to_string()),
+                ("Ctrl+g".to_string(), "toggle_agent_sidebar".to_string()),
                 ("/".to_string(), "enter_search_mode".to_string()),
                 ("n".to_string(), "next_search_result".to_string()),
                 ("N".to_string(), "previous_search_result".to_string()),
