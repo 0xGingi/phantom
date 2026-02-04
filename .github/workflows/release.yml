@@ -31,8 +31,8 @@ jobs:
             exit 0
           fi
 
-          current_version=$(rg -n '^\s*version\s*=' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
-          previous_version=$(git show HEAD^:Cargo.toml | rg -n '^\s*version\s*=' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          current_version=$(grep -E '^\s*version\s*=' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          previous_version=$(git show HEAD^:Cargo.toml | grep -E '^\s*version\s*=' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
 
           if [[ -z "$current_version" || -z "$previous_version" ]]; then
             echo "should_release=false" >> "$GITHUB_OUTPUT"
